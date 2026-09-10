@@ -1,7 +1,77 @@
 [project]
 name = "lattice"
 version = "0.1.0"
-description = "Add your description here"
+description = "Thin-waist personal agent with profiles, MCP, memory, and HITL"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.20.0",
+    "httpx>=0.28.0",
+    "mcp>=1.6.0",
+    "mem0ai>=0.1.100",
+    "chromadb>=0.6.0",
+    "pydantic>=2.10.0",
+    "pydantic-ai>=0.0.50",
+    "pydantic-settings>=2.7.0",
+    "python-telegram-bot>=21.0",
+    "pyyaml>=6.0.2",
+    "rich>=13.9.0",
+    "structlog>=24.4.0",
+    "tavily-python>=0.5.0",
+    "textual>=1.0.0",
+    "typer>=0.15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "basedpyright>=1.23.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "ruff>=0.9.0",
+]
+
+[project.scripts]
+lattice = "lattice.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lattice"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/lattice" = "lattice"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+ignore = [
+  "ASYNC109",  # tool/API timeout_seconds params are intentional
+  "ASYNC240",  # small sync pathlib in helpers OK; heavy IO uses to_thread
+  "B008",  # ContextVar default=Path.cwd() is intentional
+  "E501",  # SQL / CSS strings; format handles most
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+reportMissingImports = true
+reportUnusedImport = true
