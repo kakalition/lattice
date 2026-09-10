@@ -30,11 +30,7 @@ def resolve_base_url(settings: LatticeSettings) -> str | None:
 def resolve_model_id(settings: LatticeSettings, *, profile_model: str | None = None) -> str:
     if profile_model:
         return profile_model
-    return (
-        os.environ.get("OPENROUTER_MODEL")
-        or os.environ.get("LATTICE_AGENT__MODEL")
-        or settings.agent.model
-    )
+    return settings.agent.model
 
 
 def model_name(settings: LatticeSettings, *, profile_model: str | None = None) -> str:
@@ -43,6 +39,7 @@ def model_name(settings: LatticeSettings, *, profile_model: str | None = None) -
 
 def auxiliary_model_name(settings: LatticeSettings, *, profile_aux: str | None = None) -> str:
     return profile_aux or settings.agent.auxiliary_model
+
 
 
 def apply_provider_env(provider: ProviderConfig) -> None:

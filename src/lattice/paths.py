@@ -16,11 +16,26 @@ def project_root() -> Path:
 
 
 def lattice_home() -> Path:
-    """User data root: $LATTICE_HOME or <project>/.lattice."""
+    """Runtime data root: $LATTICE_HOME or <project>/.lattice (state, logs, memory)."""
     env = os.environ.get("LATTICE_HOME")
     if env:
         return Path(env).expanduser().resolve()
     return project_root() / ".lattice"
+
+
+def user_config_path(home: Path | None = None) -> Path:
+    """Operator-controlled settings (models, timezone, tools) — not under a hidden data dir.
+
+    - Default install: ``<project>/lattice.yaml`` (visible, editable)
+    - ``LATTICE_HOME`` or isolated ``home=`` (tests): ``<home>/lattice.yaml``
+    """
+    if os.environ.get("LATTICE_HOME"):
+        return lattice_home() / "lattice.yaml"
+    if home is not None:
+        h = home.resolve()
+        if h != (project_root() / ".lattice").resolve():
+            return h / "lattice.yaml"
+    return project_root() / "lattice.yaml"
 
 
 def ensure_home() -> Path:

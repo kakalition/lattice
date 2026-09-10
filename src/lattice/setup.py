@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from lattice.config import default_config_yaml, load_settings
-from lattice.paths import ensure_home, lattice_home
+from lattice.paths import ensure_home, lattice_home, user_config_path
 from lattice.profiles import ensure_default_profile, list_profiles
 from lattice.providers.settings import resolve_api_key
 
@@ -168,7 +168,7 @@ skills:
   disable: [safe-shell]
 tools:
   allow: [sqlite_*, web_*, read_file, search_files, clarify, todo,
-          schedule_add, schedule_list, schedule_cancel,
+          schedule_add, schedule_list, schedule_cancel, timezone_get, timezone_set,
           session_search, memory_*, skills_list, skill_view,
           tool_search, tool_describe, tool_invoke]
   deny: [shell, write_file, edit_file]
@@ -207,15 +207,35 @@ def init_home(home: Path | None = None) -> Path:
     else:
         root = ensure_home()
         (root / "workspace").mkdir(parents=True, exist_ok=True)
-    cfg = root / "config.yaml"
+    cfg = user_config_path(root if home is not None else None)
     if not cfg.exists():
         cfg.write_text(default_config_yaml(), encoding="utf-8")
-    env = root / ".env"
-    if not env.exists():
-        env.write_text("# LATTICE_PROVIDER__API_KEY=\n# OPENAI_API_KEY=\n", encoding="utf-8")
+    # Secrets belong in project-root .env only (not under .lattice/)
+    from lattice.paths import project_root
+
+    project_dot = (project_root() / ".lattice").resolve()
+    if home is None or root.resolve() == project_dot:
+        proj_env = project_root() / ".env"
+        if not proj_env.exists():
+            proj_env.write_text(
+                (project_root() / ".env.example").read_text(encoding="utf-8")
+                if (project_root() / ".env.example").is_file()
+                else (
+                    "# Secrets only (models/timezone/tools → lattice.yaml)\n"
+                    "# Copy from .env.example\n"
+                    "TELEGRAM_TOKEN=\n"
+                    "TELEGRAM_CHAT_ID=\n"
+                    "OPENROUTER_API_KEY=\n"
+                    "TAVILY_API_KEY=\n"
+                ),
+                encoding="utf-8",
+            )
     ensure_default_profile(root)
     write_skill_starters(root)
     write_finance_profile(root)
+    from lattice.timeutil import ensure_timezone
+
+    ensure_timezone(root if home is not None else None)
     jobs = root / "scheduler" / "jobs.json"
     if not jobs.exists():
         jobs.write_text('{"jobs": []}\n', encoding="utf-8")
@@ -239,6 +259,10 @@ def doctor_report(home: Path | None = None) -> list[str]:
         allow = settings.telegram.allowlist
         lines.append(f"telegram_allowlist: {allow or '(empty)'}")
         lines.append(f"tavily: {'set' if settings.tavily_api_key else 'missing'}")
+        from lattice.timeutil import resolve_timezone
+
+        lines.append(f"timezone: {settings.timezone or resolve_timezone(root)}")
+        lines.append(f"config: {user_config_path()}")
         lines.append(f"profiles: {', '.join(list_profiles(root)) or '(none)'}")
         state = root / "state.db"
         lines.append(f"state.db: {'yes' if state.exists() else 'no'}")

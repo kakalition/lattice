@@ -31,6 +31,7 @@ async def test_logging_turn_events_records_tools_and_skills(caplog) -> None:
     assert "turn=abcd1234 BEGIN" in text
     assert "tools_offered" in text and "schedule_add" in text
     assert "skills_offered" in text and "safe-shell" in text
+    assert "skill_meta" not in text
     assert "tool_start: schedule_add" in text
     assert "skill_load: weekly-review" in text
     assert "outbound: done" in text

@@ -7,7 +7,13 @@ from lattice.scheduler.jobs import (
     load_jobs,
     save_jobs,
 )
-from lattice.scheduler.tools import schedule_add, schedule_cancel, schedule_list
+from lattice.scheduler.tools import (
+    schedule_add,
+    schedule_cancel,
+    schedule_list,
+    timezone_get,
+    timezone_set,
+)
 
 __all__ = [
     "Job",
@@ -20,4 +26,6 @@ __all__ = [
     "schedule_add",
     "schedule_cancel",
     "schedule_list",
+    "timezone_get",
+    "timezone_set",
 ]

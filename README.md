@@ -8,12 +8,8 @@ See [docs/PLAN.md](docs/PLAN.md) for the full product plan.
 
 ```bash
 uv sync --extra dev
-# Project .env (also supported: .lattice/.env)
-# OPENROUTER_API_KEY=...
-# OPENROUTER_MODEL=...
-# TELEGRAM_TOKEN=...
-# TELEGRAM_CHAT_ID=...
-# or OPENAI_API_KEY=...
+# Project .env — secrets only (copy from .env.example)
+# Models / timezone / tools → lattice.yaml
 uv run lattice init
 uv run lattice doctor
 uv run lattice chat -p default
@@ -23,7 +19,8 @@ uv run lattice chat --tui -p finance
 Gateway (Telegram + scheduler):
 
 ```bash
-# set TELEGRAM_TOKEN / TELEGRAM_CHAT_ID in .env (or .lattice/config.yaml)
+cp .env.example .env   # then fill secrets
+# models and other knobs in lattice.yaml
 uv run lattice gateway
 ```
 
@@ -31,7 +28,9 @@ uv run lattice gateway
 
 - Waist: `src/lattice/{turn,agent_app,prompt,session,config,events,cli}.py`
 - Domains: `channel/`, `hitl/`, `context/`, `tools/`, `mcp/`, `skills/`, `profiles/`, `memory/`, `sqlite/`, `providers/`, `scheduler/`
-- User data: `<project>/.lattice/` (override with `LATTICE_HOME`)
+- **`lattice.yaml`** — configurable non-secrets (models, timezone, tools, budgets)
+- **`.env`** — secrets only (API keys, Telegram token)
+- **`.lattice/`** — runtime data only (state, logs, qdrant, jobs)
 
 ## Dev
 

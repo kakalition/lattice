@@ -89,8 +89,6 @@ class LoggingTurnEvents:
             len(skill_names),
             ", ".join(skill_names) or "(none)",
         )
-        for name, desc in skills:
-            self._p("skill_meta: %s — %s", name, _clip(desc, 200))
 
     def log_end(self, *, outbound_text: str, error: str | None = None) -> None:
         ms = int((time.monotonic() - self.started) * 1000)

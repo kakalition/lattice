@@ -108,6 +108,9 @@ def gateway(
 
     settings = load_settings()
     init_home(settings.home)
+    from lattice.timeutil import ensure_timezone
+
+    settings.timezone = ensure_timezone(settings.home)
     log_path = setup_logging()
     lock = PidfileLock(settings.home / "gateway.pid")
     lock.acquire()
@@ -144,8 +147,9 @@ def gateway(
         )
         console.print(f"[dim]logs → {log_path}[/]")
         logger.info(
-            "gateway start allowlist=%s log=%s",
+            "gateway start allowlist=%s timezone=%s log=%s",
             settings.telegram.allowlist,
+            settings.timezone,
             log_path,
         )
 

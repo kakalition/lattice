@@ -10,7 +10,7 @@ import yaml
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from lattice.paths import lattice_home
+from lattice.paths import lattice_home, project_root, user_config_path
 
 
 class McpDeferMode(StrEnum):
@@ -81,6 +81,7 @@ class LatticeSettings(BaseSettings):
     tavily_api_key: str | None = None
     default_profile: str = "default"
     queue_depth: int = 8
+    timezone: str = ""  # IANA name; empty → detect / read config
 
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -93,19 +94,51 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+def _scrub_secrets(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop secret fields so YAML can never supply tokens/keys."""
+    out = dict(data)
+    out.pop("tavily_api_key", None)
+    if isinstance(out.get("provider"), dict):
+        provider = dict(out["provider"])
+        provider.pop("api_key", None)
+        out["provider"] = provider
+    if isinstance(out.get("telegram"), dict):
+        telegram = dict(out["telegram"])
+        telegram.pop("token", None)
+        out["telegram"] = telegram
+    return out
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def merge_yaml_into(path: Path, updates: dict[str, Any]) -> Path:
+    """Create/merge keys into a YAML config file. Returns path written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = _scrub_secrets(_load_yaml(path))
+    data = _deep_merge(data, _scrub_secrets(updates))
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return path
+
+
 def load_settings(home: Path | None = None) -> LatticeSettings:
-    """Load settings from YAML + project/.lattice .env + process env."""
+    """Load non-secret lattice.yaml + secrets exclusively from .env."""
     _load_dotenv_files(home)
     root = home or lattice_home()
     data: dict[str, Any] = {"home": root}
-    config_path = root / "config.yaml"
-    if config_path.is_file():
-        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        if isinstance(loaded, dict):
-            data = _deep_merge(data, loaded)
+    # Visible project config only (legacy .lattice/config.yaml ignored for settings)
+    data = _deep_merge(data, _scrub_secrets(_load_yaml(user_config_path(home))))
     data = _apply_compat_env(data)
-    env_path = root / ".env"
-    settings = LatticeSettings(_env_file=env_path if env_path.is_file() else None, **data)
+    # Do not pass a YAML _env_file for secrets — project .env already loaded into os.environ
+    settings = LatticeSettings(**data)
+    if not (settings.timezone or "").strip():
+        from lattice.timeutil import resolve_timezone
+
+        settings.timezone = resolve_timezone(home)
     return settings
 
 
@@ -114,14 +147,13 @@ def _load_dotenv_files(home: Path | None = None) -> None:
         from dotenv import load_dotenv
     except ImportError:
         return
-    # Project cwd .env first (dev), then ~/.lattice/.env
+    # Project .env is the only secrets source (override=False keeps shell exports)
+    load_dotenv(project_root() / ".env", override=False)
     load_dotenv(Path.cwd() / ".env", override=False)
-    root = home or lattice_home()
-    load_dotenv(root / ".env", override=False)
 
 
 def _apply_compat_env(data: dict[str, Any]) -> dict[str, Any]:
-    """Map common third-party env names into Lattice settings shape."""
+    """Inject secrets from .env only. Models and other knobs come from lattice.yaml."""
     import os
 
     out = dict(data)
@@ -129,63 +161,66 @@ def _apply_compat_env(data: dict[str, Any]) -> dict[str, Any]:
     agent = dict(out.get("agent") or {})
     telegram = dict(out.get("telegram") or {})
 
-    if not provider.get("api_key"):
-        key = (
-            os.environ.get("LATTICE_PROVIDER__API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-            or os.environ.get("OPENROUTER_API_KEY")
-        )
-        if key:
-            provider["api_key"] = key
-    if not provider.get("base_url"):
-        base = os.environ.get("LATTICE_PROVIDER__BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-        if not base and os.environ.get("OPENROUTER_API_KEY"):
-            base = "https://openrouter.ai/api/v1"
-        if base:
-            provider["base_url"] = base
-    if (
-        os.environ.get("OPENROUTER_MODEL")
-        and os.environ.get("OPENROUTER_API_KEY")
-        and agent.get("model") in (None, "openai:gpt-4o")
-    ):
-        agent["model"] = os.environ["OPENROUTER_MODEL"]
-        agent.setdefault("auxiliary_model", os.environ["OPENROUTER_MODEL"])
-    if not telegram.get("token"):
-        tok = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("LATTICE_TELEGRAM__TOKEN")
-        if tok:
-            telegram["token"] = tok
-    if not telegram.get("allowlist"):
-        chat = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_ALLOWLIST")
-        if chat:
-            import contextlib
+    key = (
+        os.environ.get("LATTICE_PROVIDER__API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
+    )
+    if key:
+        provider["api_key"] = key
 
-            with contextlib.suppress(ValueError):
-                telegram["allowlist"] = [int(x.strip()) for x in chat.split(",") if x.strip()]
+    base = os.environ.get("LATTICE_PROVIDER__BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+    if not base and os.environ.get("OPENROUTER_API_KEY"):
+        base = "https://openrouter.ai/api/v1"
+    if base:
+        provider["base_url"] = base
+
+    # Fallback model defaults to auxiliary when unset in yaml
+    if not provider.get("fallback_model") and agent.get("auxiliary_model"):
+        provider["fallback_model"] = agent["auxiliary_model"]
+
+    tok = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("LATTICE_TELEGRAM__TOKEN")
+    if tok:
+        telegram["token"] = tok
+
+    chat = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_ALLOWLIST")
+    if chat:
+        import contextlib
+
+        with contextlib.suppress(ValueError):
+            telegram["allowlist"] = [int(x.strip()) for x in chat.split(",") if x.strip()]
 
     out["provider"] = provider
     out["agent"] = agent
     out["telegram"] = telegram
-    if not out.get("tavily_api_key"):
-        tav = os.environ.get("LATTICE_TAVILY_API_KEY") or os.environ.get("TAVILY_API_KEY")
-        if tav:
-            out["tavily_api_key"] = tav
+
+    tav = os.environ.get("LATTICE_TAVILY_API_KEY") or os.environ.get("TAVILY_API_KEY")
+    if tav:
+        out["tavily_api_key"] = tav
+    else:
+        out.pop("tavily_api_key", None)
     return out
 
 
 def default_config_yaml() -> str:
+    """Non-secret operator defaults (including models). Secrets → .env only."""
     return """\
-# Lattice configuration
+# Non-secret Lattice settings (models, timezone, tools, …).
+# Secrets → project .env only:
+#   OPENROUTER_API_KEY / TELEGRAM_TOKEN / TELEGRAM_CHAT_ID / TAVILY_API_KEY
+# Runtime data → .lattice/
+
+timezone: Asia/Jakarta
+
 agent:
-  model: openai:gpt-4o
-  auxiliary_model: openai:gpt-4o-mini
+  model: deepseek/deepseek-v4.1-flash
+  auxiliary_model: inception/mercury-2.5
   iteration_budget: 40
   hitl_timeout_seconds: 600
   workspace: null
 
 provider:
-  # api_key: set via LATTICE_PROVIDER__API_KEY or OPENAI_API_KEY
-  base_url: null
-  fallback_model: null
+  fallback_model: inception/mercury-2.5
 
 tools:
   allow: ["*"]
@@ -198,12 +233,9 @@ sqlite:
   query_timeout_ms: 5000
 
 telegram:
-  token: null
-  allowlist: []
   tools:
     allow: ["*"]
     deny: []
 
-tavily_api_key: null
 default_profile: default
 """

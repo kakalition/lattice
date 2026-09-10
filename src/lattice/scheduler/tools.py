@@ -9,14 +9,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lattice.scheduler.jobs import Job, load_jobs, save_jobs
+from lattice.timeutil import persist_timezone, resolve_timezone
 
 
-def local_tz_name() -> str:
-    tz = datetime.now().astimezone().tzinfo
-    key = getattr(tz, "key", None)
-    if isinstance(key, str) and key:
-        return key
-    return "UTC"
+def local_tz_name(home: Path | None = None) -> str:
+    """Remembered config timezone, else host detection (not a blind UTC fallback)."""
+    return resolve_timezone(home)
 
 
 def _parse_run_at(value: str, *, timezone: str) -> datetime:
@@ -45,7 +43,7 @@ def schedule_add(
     reminder = reminder.strip()
     if not reminder:
         return "reminder text is required"
-    tz = (timezone or local_tz_name()).strip()
+    tz = resolve_timezone(home, explicit=timezone)
     run_at = run_at.strip()
     cron = cron.strip()
     if bool(run_at) == bool(cron):
@@ -107,3 +105,20 @@ def schedule_cancel(job_id: str, *, home: Path | None = None) -> str:
         return f"not found: {job_id}"
     save_jobs(keep, home)
     return f"cancelled {job_id}"
+
+
+def timezone_get(*, home: Path | None = None) -> str:
+    tz = resolve_timezone(home)
+    return f"timezone={tz}"
+
+
+def timezone_set(timezone: str, *, home: Path | None = None) -> str:
+    name = timezone.strip()
+    if not name:
+        return "timezone is required (IANA name, e.g. Asia/Ho_Chi_Minh)"
+    try:
+        ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return f"unknown timezone: {name}"
+    persist_timezone(name, home)
+    return f"timezone saved: {name}"

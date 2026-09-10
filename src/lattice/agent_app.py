@@ -18,7 +18,13 @@ from lattice.memory.tools import memory_add, memory_forget, memory_search, memor
 from lattice.profiles import Profile, merge_tool_policy
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers import FallbackCooldown, build_openai_model
-from lattice.scheduler.tools import schedule_add, schedule_cancel, schedule_list
+from lattice.scheduler.tools import (
+    schedule_add,
+    schedule_cancel,
+    schedule_list,
+    timezone_get,
+    timezone_set,
+)
 from lattice.session import SessionStore
 from lattice.skills import skill_view, skills_list
 from lattice.sqlite import (
@@ -76,6 +82,8 @@ CORE_TOOL_NAMES = [
     "schedule_add",
     "schedule_list",
     "schedule_cancel",
+    "timezone_get",
+    "timezone_set",
     "session_search",
     "memory_search",
     "memory_add",
@@ -310,12 +318,15 @@ def create_agent(
         deliver: str = "telegram",
         job_id: str = "",
     ) -> str:
-        """Schedule a timed reminder. One-shot: run_at ISO-8601 with offset
-        (e.g. 2026-09-10T22:10:00+07:00). Recurring: cron five fields in timezone.
-        timezone defaults to this host's local zone — do not ask the user unless needed.
+        """Schedule a timed reminder. One-shot: run_at as local wall time
+        (e.g. 2026-09-10T22:45:00) — Lattice applies the saved timezone automatically.
+        Or include an explicit offset (…+07:00). Recurring: cron five fields in timezone.
+        Never pass timezone='' to force UTC; omit timezone to use config. Do not ask the
+        user for timezone unless they want to change it (use timezone_set).
         Prefer this over todo for anything time-based. deliver=telegram|cli|none."""
         if "schedule_add" not in ctx.deps.enabled_tools:
             return "tool not allowed"
+        tz = timezone or ctx.deps.settings.timezone
         return await traced(
             ctx,
             "schedule_add",
@@ -323,7 +334,7 @@ def create_agent(
                 "reminder": reminder,
                 "run_at": run_at,
                 "cron": cron,
-                "timezone": timezone,
+                "timezone": tz,
                 "deliver": deliver,
                 "job_id": job_id,
             },
@@ -332,7 +343,7 @@ def create_agent(
                 home=ctx.deps.settings.home,
                 run_at=run_at,
                 cron=cron,
-                timezone=timezone,
+                timezone=tz,
                 deliver=deliver,
                 profile=ctx.deps.profile.id,
                 job_id=job_id,
@@ -357,6 +368,29 @@ def create_agent(
             {"job_id": job_id},
             lambda: schedule_cancel(job_id, home=ctx.deps.settings.home),
         )
+
+    @agent.tool
+    async def timezone_get_tool(ctx: RunContext[TurnDeps]) -> str:
+        """Show the remembered IANA timezone used for reminders."""
+        if "timezone_get" not in ctx.deps.enabled_tools:
+            return "tool not allowed"
+        return await traced(
+            ctx, "timezone_get", {}, lambda: timezone_get(home=ctx.deps.settings.home)
+        )
+
+    @agent.tool
+    async def timezone_set_tool(ctx: RunContext[TurnDeps], timezone: str) -> str:
+        """Persist the user's IANA timezone (e.g. Asia/Ho_Chi_Minh) for all reminders."""
+        if "timezone_set" not in ctx.deps.enabled_tools:
+            return "tool not allowed"
+
+        def _set() -> str:
+            result = timezone_set(timezone, home=ctx.deps.settings.home)
+            if result.startswith("timezone saved:"):
+                ctx.deps.settings.timezone = timezone.strip()
+            return result
+
+        return await traced(ctx, "timezone_set", {"timezone": timezone}, _set)
 
     @agent.tool
     async def session_search_tool(ctx: RunContext[TurnDeps], query: str) -> str:
@@ -574,6 +608,8 @@ def create_agent(
         "schedule_add": schedule_add_tool,
         "schedule_list": schedule_list_tool,
         "schedule_cancel": schedule_cancel_tool,
+        "timezone_get": timezone_get_tool,
+        "timezone_set": timezone_set_tool,
         "session_search": session_search_tool,
         "memory_search": memory_search_tool,
         "memory_add": memory_add_tool,

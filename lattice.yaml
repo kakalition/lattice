@@ -1,0 +1,32 @@
+# Non-secret Lattice settings (models, timezone, tools, …).
+# Secrets → project .env only
+# Runtime data → .lattice/
+
+timezone: Asia/Jakarta
+
+agent:
+  model: deepseek/deepseek-v4.1-flash
+  auxiliary_model: inception/mercury-2.5
+  iteration_budget: 40
+  hitl_timeout_seconds: 600
+  workspace: null
+
+provider:
+  fallback_model: inception/mercury-2.5
+
+tools:
+  allow: ["*"]
+  deny: []
+  mcp_defer: auto
+
+sqlite:
+  databases: {}
+  query_row_limit: 500
+  query_timeout_ms: 5000
+
+telegram:
+  tools:
+    allow: ["*"]
+    deny: []
+
+default_profile: default

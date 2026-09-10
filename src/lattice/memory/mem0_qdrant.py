@@ -104,8 +104,7 @@ def _mem0_config(*, collection: str, path: Path, client: Any) -> dict[str, Any]:
         or ("https://openrouter.ai/api/v1" if os.environ.get("OPENROUTER_API_KEY") else None)
     )
     model = (
-        os.environ.get("OPENROUTER_MODEL")
-        or os.environ.get("LATTICE_AGENT__MODEL")
+        os.environ.get("LATTICE_AGENT__MODEL")
         or "gpt-4o-mini"
     )
     llm_config: dict[str, Any] = {"model": model}

@@ -87,7 +87,7 @@ def test_fallback_cooldown() -> None:
 
 def test_init_and_skills(tmp_path: Path) -> None:
     root = init_home(tmp_path)
-    assert (root / "config.yaml").exists()
+    assert (root / "lattice.yaml").exists()
     assert (root / "profiles" / "default" / "SOUL.md").exists()
     assert (root / "profiles" / "finance" / "profile.yaml").exists()
     write_skill_starters(root)

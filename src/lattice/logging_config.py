@@ -62,6 +62,20 @@ def setup_logging(
         root_logger.addHandler(stream)
 
     logging.captureWarnings(True)
+    # Library chatter (Telegram long-poll getUpdates, OpenRouter, etc.)
+    for name in (
+        "httpx",
+        "httpcore",
+        "httpx2",
+        "telegram",
+        "telegram.ext",
+        "telegram.ext.Application",
+        "openai",
+        "httpcore.connection",
+        "httpcore.http11",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
     _CONFIGURED = True
     logging.getLogger("lattice").info(
         "logging to %s (project=%s, rotate 5×5MB)", log_file, project_root()
