@@ -55,6 +55,21 @@ class CliAdapter:
                 continue
             if line in {"/quit", "/exit", "/q"}:
                 break
+            if line.startswith("/profile remove ") or line.startswith("/profile rm "):
+                pid = line.split(maxsplit=2)[2].strip()
+                try:
+                    from lattice.profiles import remove_profile
+
+                    remove_profile(pid)
+                    await self.store.clear_sticky_for_profile(pid)
+                    if self.profile_id == pid:
+                        self.profile_id = "default"
+                        self.session_id = None
+                        await self.store.set_sticky_profile("cli", "local", "default")
+                    self.console.print(f"removed profile → {pid}")
+                except (ValueError, FileNotFoundError) as exc:
+                    self.console.print(f"[red]{exc}[/]")
+                continue
             if line.startswith("/profile "):
                 self.profile_id = line.split(maxsplit=1)[1].strip()
                 self.session_id = None
@@ -62,7 +77,9 @@ class CliAdapter:
                 self.console.print(f"switched profile → {self.profile_id} (new session)")
                 continue
             if line == "/help":
-                self.console.print("/profile <id>  /sessions  /resume <id>  /stop  /quit")
+                self.console.print(
+                    "/profile <id>  /profile remove <id>  /sessions  /resume <id>  /stop  /quit"
+                )
                 continue
             if line == "/sessions":
                 rows = await self.store.list_sessions(profile_id=self.profile_id, limit=15)

@@ -112,7 +112,7 @@ DEFAULT_PROFILE_YAML = """\
 name: default
 description: Default Lattice profile
 skills:
-  prefer: [telegram-chat, session-hygiene, safe-shell, web-research, sqlite-admin, cited-research, weekly-review]
+  prefer: [telegram-chat, skill-authoring, profile-authoring, session-hygiene, safe-shell, web-research, sqlite-admin, cited-research, weekly-review]
 tools:
   allow: ["*"]
   deny: []

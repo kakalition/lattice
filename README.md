@@ -13,7 +13,7 @@ uv sync --extra dev
 uv run lattice init
 uv run lattice doctor
 uv run lattice chat -p default
-uv run lattice chat --tui -p finance
+uv run lattice chat --tui
 ```
 
 Gateway (Telegram + scheduler):

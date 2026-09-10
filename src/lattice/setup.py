@@ -56,7 +56,8 @@ description: List/schema/query before execute; backup before migrations; never t
 - Prefer sqlite_list → sqlite_schema → sqlite_query before sqlite_execute.
 - Always sqlite_backup before migrations or destructive DDL.
 - Never operate on Lattice session state.db (not in the registry).
-- Writes are HITL-gated — explain the SQL clearly.
+- Destructive SQL (`DELETE`/`DROP`/`ALTER`/…) is HITL-gated — explain clearly. `INSERT`/`CREATE` are not.
+- `sqlite_register` persists under `.lattice/sqlite/databases.yaml` (survives restart). Do **not** ask the user to edit `lattice.yaml` for agent-authored DBs.
 """,
     ),
     "cited-research": (
@@ -187,6 +188,113 @@ Want this as a 22:45 reminder?
 Bad: a markdown table of tips, or a 4k paste of search snippets.
 """,
     ),
+    "skill-authoring": (
+        "Create or edit Lattice skills under skills/<name>/SKILL.md via write_file/edit_file (CLI or Telegram).",
+        """---
+name: skill-authoring
+description: "Create or edit Lattice skills under skills/<name>/SKILL.md via write_file/edit_file (CLI or Telegram)."
+---
+# Skill authoring
+Use when the user asks to create, update, or refine a Lattice skill from any channel (CLI, Telegram, …).
+
+## Paths (required)
+- New/edit path: `skills/<kebab-name>/SKILL.md` (resolved under Lattice home, not the workspace jail).
+- Example: `skills/meal-prep/SKILL.md`
+- After write, call `skills_list` then `skill_view <name>` to verify parse.
+- Optional: add the name to a profile's `skills.prefer` (see **profile-authoring**).
+
+## Frontmatter
+```yaml
+---
+name: my-skill
+description: "One line, under ~120 chars. Quote if it contains colons."
+---
+```
+- `name` must match the folder name (kebab-case).
+- Quote `description` when it contains `:`.
+
+## Body shape
+1. When to use / when to skip
+2. Procedure (numbered, tool names = Lattice tools: `web_search`, `write_file`, …)
+3. Output shape (if useful)
+4. Pitfalls
+
+Keep it short. Prefer progressive disclosure: index shows description; body loads via `skill_view`.
+
+## Channel flow
+1. `clarify` name + purpose if ambiguous.
+2. Draft full `SKILL.md` content in the tool call (not as a giant Telegram paste first).
+3. `write_file` path `skills/<name>/SKILL.md` (HITL may ask approve — explain briefly).
+4. Confirm with `skill_view`. On Telegram, summarize what was written; do not dump the whole file.
+
+## Don't
+- Write under the workspace copy unless the user insists; home `skills/` is canonical.
+- Invent Hermes-only tools (`browser_*`, `skill_manage`).
+- Put secrets in skills.
+""",
+    ),
+    "profile-authoring": (
+        "Create or edit Lattice profiles (profile.yaml, SOUL.md, USER.md) via write_file/edit_file in any channel.",
+        """---
+name: profile-authoring
+description: "Create or edit Lattice profiles (profile.yaml, SOUL.md, USER.md) via write_file/edit_file in any channel."
+---
+# Profile authoring
+Use when the user wants a new agent persona/policy or to change an existing profile from CLI or Telegram.
+
+## Layout
+```
+profiles/<id>/
+  profile.yaml
+  SOUL.md
+  USER.md
+```
+Paths for tools: `profiles/<id>/profile.yaml`, `profiles/<id>/SOUL.md`, `profiles/<id>/USER.md`
+(resolved under Lattice home).
+
+## profile.yaml template
+```yaml
+name: my-profile
+description: Short blurb
+skills:
+  prefer: [session-hygiene, web-research]
+  disable: []
+tools:
+  allow: ["*"]
+  deny: []
+memory:
+  collection: lattice-my-profile
+# optional:
+# primary_model: …
+# secondary_model: …
+# auxiliary_model: …
+# sqlite:
+#   allow: [ledger]
+# workspace: null
+```
+- `name` / folder `<id>`: kebab-case, stable id.
+- Deny wins over allow for tools. Read-only personas: deny `shell`, `write_file`, `edit_file`.
+- Authoring profiles that need file writes must **allow** `write_file` / `edit_file` (default profile does).
+- Databases: use `sqlite_register` while chatting (persists automatically). Only put `sqlite.allow: [ledger]` on the profile — do not edit `lattice.yaml` databases for this.
+
+## SOUL.md / USER.md
+- **SOUL.md**: identity + behavior (system). Concise.
+- **USER.md**: durable user notes for that persona (optional).
+
+## Channel flow
+1. `clarify` id, purpose, tool strictness, which skills to prefer.
+2. `write_file` the three files (or edit existing with `edit_file` / `read_file` first).
+3. To delete: `profile_remove` with the id (HITL approve; cannot remove `default`). Or channel `/profile remove <id>`.
+4. Tell the user how to switch: Telegram `/profile <id>` or CLI `-p <id>` (if unsure, say "switch profile to `<id>`").
+5. On Telegram: short confirmation + what changed; no raw YAML dump unless asked.
+
+## Don't
+- Overwrite `default` SOUL without explicit confirmation.
+- Remove `default`.
+- Put API keys in profile files (use `.env`).
+- Point `sqlite.allow` at Lattice `state.db`.
+""",
+    ),
 }
 
 
@@ -198,44 +306,6 @@ def write_skill_starters(home: Path | None = None) -> None:
         path = skill_dir / "SKILL.md"
         if not path.exists():
             path.write_text(body, encoding="utf-8")
-
-
-def write_finance_profile(home: Path | None = None) -> Path:
-    root = (home or lattice_home()) / "profiles" / "finance"
-    root.mkdir(parents=True, exist_ok=True)
-    yaml_path = root / "profile.yaml"
-    if not yaml_path.exists():
-        yaml_path.write_text(
-            """\
-name: finance
-description: Personal finance analyst
-skills:
-  prefer: [telegram-chat, sqlite-admin, web-research, session-hygiene, cited-research]
-  disable: [safe-shell]
-tools:
-  allow: [sqlite_*, web_*, read_file, search_files, clarify, todo,
-          schedule_add, schedule_list, schedule_cancel, timezone_get, timezone_set,
-          delegate, session_search, memory_*, skills_list, skill_view,
-          tool_search, tool_describe, tool_invoke]
-  deny: [shell, write_file, edit_file]
-sqlite:
-  allow: [ledger, taxes]
-memory:
-  collection: lattice-finance
-""",
-            encoding="utf-8",
-        )
-    soul = root / "SOUL.md"
-    if not soul.exists():
-        soul.write_text(
-            "You are a careful personal finance analyst. Prefer read-only SQL and citations.\n"
-            "Never use shell. Ask clarify when amounts or accounts are ambiguous.\n",
-            encoding="utf-8",
-        )
-    user = root / "USER.md"
-    if not user.exists():
-        user.write_text("# Finance user notes\n", encoding="utf-8")
-    return root
 
 
 def init_home(home: Path | None = None) -> Path:
@@ -278,7 +348,6 @@ def init_home(home: Path | None = None) -> Path:
             )
     ensure_default_profile(root)
     write_skill_starters(root)
-    write_finance_profile(root)
     from lattice.timeutil import ensure_timezone
 
     ensure_timezone(root if home is not None else None)
@@ -313,6 +382,13 @@ def doctor_report(home: Path | None = None) -> list[str]:
         allow = settings.telegram.allowlist
         lines.append(f"telegram_allowlist: {allow or '(empty)'}")
         lines.append(f"tavily: {'set' if settings.tavily_api_key else 'missing'}")
+        try:
+            import rapidocr  # noqa: F401
+
+            ocr_status = "ok"
+        except ImportError:
+            ocr_status = "missing (uv add rapidocr onnxruntime)"
+        lines.append(f"ocr/rapidocr: {ocr_status}")
         from lattice.timeutil import resolve_timezone
 
         lines.append(f"timezone: {settings.timezone or resolve_timezone(root)}")

@@ -16,7 +16,7 @@ from lattice.channel.telegram.keyboards import inline_keyboard
 from lattice.config import LatticeSettings
 from lattice.hitl.telegram_adapter import TelegramHitlAdapter
 from lattice.models import Inbound, Outbound
-from lattice.profiles import list_profiles
+from lattice.profiles import list_profiles, remove_profile
 from lattice.session import SessionStore
 
 logger = logging.getLogger("lattice.channel.telegram")
@@ -65,7 +65,13 @@ class TelegramBot:
             filters,
         )
 
-        app = Application.builder().token(token).build()
+        app = (
+            Application.builder()
+            .token(token)
+            # HITL Approve/Deny callbacks must run while MessageHandler awaits hitl.approve().
+            .concurrent_updates(True)
+            .build()
+        )
 
         async def _post_init(application: Any) -> None:
             await application.bot.set_my_commands([BotCommand(c, d) for c, d in COMMANDS])
@@ -123,8 +129,11 @@ class TelegramBot:
                         reply_markup=kwargs.get("reply_markup"),
                     )
 
-        async def _send_for_hitl(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+        async def _send_for_hitl(
+            context: ContextTypes.DEFAULT_TYPE, chat_id: int, *, mark: list[bool]
+        ):
             async def _inner(*, text: str, buttons: list[dict[str, str]] | None = None) -> None:
+                mark[0] = True
                 await send_html(chat_id, text, buttons=buttons, context=context)
 
             return _inner
@@ -141,7 +150,11 @@ class TelegramBot:
             uid = update.effective_user.id if update.effective_user else 0
             ev = self._cancel.setdefault(uid, asyncio.Event())
             ev.set()
-            await update.message.reply_text("Stop requested.")
+            n = self.hitl.cancel_all("cancel")
+            self._busy.discard(uid)
+            await update.message.reply_text(
+                f"Stop requested (cleared {n} pending approval(s)). Send a new message."
+            )
 
         async def on_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             uid = str(update.effective_user.id)
@@ -159,11 +172,31 @@ class TelegramBot:
             await update.message.reply_text(f"resumed {context.args[0]}")
 
         async def on_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            args = context.args or []
+            if args and args[0].lower() == "remove":
+                if len(args) < 2:
+                    await update.message.reply_text("usage: /profile remove <id>")
+                    return
+                pid = args[1].strip()
+                if pid == "default":
+                    await update.message.reply_text("cannot remove the default profile")
+                    return
+                buttons = [
+                    {"label": f"Remove {pid}", "data": f"profrmok:{pid}"},
+                    {"label": "Cancel", "data": "profrmno"},
+                ]
+                await send_html(
+                    update.effective_chat.id,
+                    f"Remove profile `{pid}`? This deletes profiles/{pid}/.",
+                    buttons=buttons,
+                    context=context,
+                )
+                return
             profiles = list_profiles(self.settings.home)
             buttons = [{"label": p, "data": f"profile:{p}"} for p in profiles]
             await send_html(
                 update.effective_chat.id,
-                "Choose profile (starts a new session):",
+                "Choose profile (starts a new session).\nOr `/profile remove <id>`.",
                 buttons=buttons,
                 context=context,
             )
@@ -186,11 +219,54 @@ class TelegramBot:
             query = update.callback_query
             if not query or not query.data:
                 return
-            await query.answer()
             data = query.data
             if data.startswith("hitl:"):
                 _, token, value = data.split(":", 2)
-                self.hitl.resolve(token, value)
+                ok = self.hitl.resolve(token, value)
+                logger.info("hitl callback token=%s value=%s ok=%s", token, value, ok)
+                label = {
+                    "approve": "Approved",
+                    "deny": "Denied",
+                    "cancel": "Cancelled",
+                }.get(value, value)
+                if value.startswith("c") and value[1:].isdigit():
+                    try:
+                        letter = chr(ord("A") + int(value[1:]))
+                    except ValueError:
+                        letter = value
+                    label = f"Chose {letter}"
+                with contextlib.suppress(Exception):
+                    await query.answer()
+                chat_id = update.effective_chat.id if update.effective_chat else None
+                if ok and chat_id is not None:
+                    with contextlib.suppress(Exception):
+                        await context.bot.send_message(chat_id=chat_id, text=label)
+                    with contextlib.suppress(Exception):
+                        await query.edit_message_reply_markup(reply_markup=None)
+                elif not ok and chat_id is not None:
+                    with contextlib.suppress(Exception):
+                        await context.bot.send_message(
+                            chat_id=chat_id, text="That approval expired — send a new message."
+                        )
+                return
+            await query.answer()
+            if data == "profrmno":
+                with contextlib.suppress(Exception):
+                    await query.edit_message_text("remove cancelled")
+                return
+            if data.startswith("profrmok:"):
+                pid = data.split(":", 1)[1]
+                try:
+                    remove_profile(pid, self.settings.home)
+                    await self.store.clear_sticky_for_profile(pid)
+                    uid = query.from_user.id if query.from_user else 0
+                    sticky = await self.store.get_sticky_profile("telegram", str(uid))
+                    if sticky == pid:
+                        await self.store.set_sticky_profile("telegram", str(uid), "default")
+                    self._sessions.pop(uid, None)
+                    await query.edit_message_text(f"removed profile {pid}")
+                except (ValueError, FileNotFoundError) as exc:
+                    await query.edit_message_text(f"remove failed: {exc}")
                 return
             if data.startswith("profile:"):
                 profile_id = data.split(":", 1)[1]
@@ -216,12 +292,18 @@ class TelegramBot:
 
             text = update.message.text or update.message.caption or ""
             media_paths: list[Path] = []
-            # documents/photos saved under workspace when present
+            dest = self.settings.home / "workspace" / "inbound"
+            dest.mkdir(parents=True, exist_ok=True)
             if update.message.document:
                 tg_file = await update.message.document.get_file()
-                dest = self.settings.home / "workspace" / "inbound"
-                dest.mkdir(parents=True, exist_ok=True)
                 path = dest / (update.message.document.file_name or f"doc-{update_id}")
+                await tg_file.download_to_drive(custom_path=str(path))
+                media_paths.append(path)
+            elif update.message.photo:
+                # largest size last
+                photo = update.message.photo[-1]
+                tg_file = await photo.get_file()
+                path = dest / f"photo-{update_id}.jpg"
                 await tg_file.download_to_drive(custom_path=str(path))
                 media_paths.append(path)
 
@@ -249,8 +331,15 @@ class TelegramBot:
                     await update.message.set_reaction("👀")
                 status = await update.message.reply_text("thinking…")
                 sticky = await self.store.get_sticky_profile("telegram", str(uid)) or "default"
+                # When HITL prompts are sent after "thinking…", editing that status
+                # buries the final reply above the approvals — send a new message instead.
+                hitl_after_status = [False]
                 self.hitl.set_active_user(str(uid))
-                self.hitl.bind_send(await _send_for_hitl(context, update.effective_chat.id))
+                self.hitl.bind_send(
+                    await _send_for_hitl(
+                        context, update.effective_chat.id, mark=hitl_after_status
+                    )
+                )
                 logger.info(
                     "recv user=%s profile=%s text=%s",
                     uid,
@@ -273,13 +362,21 @@ class TelegramBot:
                 logger.info("send user=%s chars=%d", uid, len(outbound.text or ""))
                 if outbound.session_id:
                     self._sessions[uid] = outbound.session_id
+                edit_id = None if hitl_after_status[0] else status.message_id
+                if hitl_after_status[0]:
+                    with contextlib.suppress(Exception):
+                        await context.bot.edit_message_text(
+                            chat_id=update.effective_chat.id,
+                            message_id=status.message_id,
+                            text="…",
+                        )
                 await send_html(
                     update.effective_chat.id,
                     outbound.text,
                     buttons=[{"label": b.label, "data": b.data} for b in outbound.buttons]
                     if outbound.buttons
                     else None,
-                    edit_message_id=status.message_id,
+                    edit_message_id=edit_id,
                     context=context,
                 )
                 if outbound.media_paths:

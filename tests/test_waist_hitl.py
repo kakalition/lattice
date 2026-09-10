@@ -80,14 +80,20 @@ async def test_maybe_approve_deny_and_memory(tmp_path: Path) -> None:
     hitl = RecordingHitl(ApprovalDecision.DENY)
     deps = _deps(tmp_path, hitl)
     ctx = SimpleNamespace(deps=deps)
-    denied = await maybe_approve(ctx, "write_file", "a.txt", path="a.txt")  # type: ignore[arg-type]
+    denied = await maybe_approve(ctx, "sqlite_execute", "a", name="a", sql="DELETE FROM t")  # type: ignore[arg-type]
     assert denied == "denied: deny"
-    assert hitl.calls == ["write_file"]
+    assert hitl.calls == ["sqlite_execute"]
 
     hitl.decision = ApprovalDecision.APPROVE
-    assert await maybe_approve(ctx, "write_file", "b.txt", path="b.txt") is None  # type: ignore[arg-type]
-    assert await maybe_approve(ctx, "write_file", "b.txt", path="b.txt") is None  # type: ignore[arg-type]
-    assert hitl.calls.count("write_file") == 2
+    assert (
+        await maybe_approve(ctx, "sqlite_execute", "b", name="b", sql="DELETE FROM t")  # type: ignore[arg-type]
+        is None
+    )
+    assert (
+        await maybe_approve(ctx, "sqlite_execute", "b", name="b", sql="DELETE FROM t")  # type: ignore[arg-type]
+        is None
+    )
+    assert hitl.calls.count("sqlite_execute") == 2
 
 
 @pytest.mark.asyncio
@@ -96,26 +102,28 @@ async def test_maybe_approve_consecutive_denial_breaker(tmp_path: Path) -> None:
     deps = _deps(tmp_path, hitl)
     ctx = SimpleNamespace(deps=deps)
     for i in range(2):
-        out = await maybe_approve(ctx, "write_file", f"f{i}.txt", path=f"f{i}.txt")  # type: ignore[arg-type]
+        out = await maybe_approve(
+            ctx, "sqlite_execute", f"f{i}", name=f"f{i}", sql="DELETE FROM t"
+        )  # type: ignore[arg-type]
         assert out == "denied: deny"
-    out = await maybe_approve(ctx, "write_file", "f3.txt", path="f3.txt")  # type: ignore[arg-type]
+    out = await maybe_approve(ctx, "sqlite_execute", "f3", name="f3", sql="DELETE FROM t")  # type: ignore[arg-type]
     assert out == "denied (consecutive denial breaker)"
 
 
-def test_tool_policy_matrix_finance_and_channel() -> None:
+def test_tool_policy_matrix_deny_and_channel() -> None:
     names = list(CORE_TOOL_NAMES)
-    finance = merge_tool_policy(
+    restricted = merge_tool_policy(
         names,
         profile_allow=["sqlite_*", "web_*", "read_file", "clarify", "memory_*", "skill*"],
         profile_deny=["shell", "write_file", "edit_file"],
         channel_allow=["*"],
         channel_deny=[],
     )
-    assert "shell" not in finance
-    assert "write_file" not in finance
-    assert "sqlite_query" in finance
-    assert "web_search" in finance
-    assert "skill_view" in finance
+    assert "shell" not in restricted
+    assert "write_file" not in restricted
+    assert "sqlite_query" in restricted
+    assert "web_search" in restricted
+    assert "skill_view" in restricted
 
     telegram_tight = merge_tool_policy(
         names,
@@ -219,11 +227,66 @@ async def test_telegram_hitl_resolve_approve() -> None:
         await asyncio.sleep(0.01)
     assert adapter._pending
     token = next(iter(adapter._pending))
-    adapter.resolve(token, "approve")
+    assert adapter.resolve(token, "approve") is True
+    assert adapter.resolve(token, "approve") is False
     decision = await task
     assert decision == ApprovalDecision.APPROVE
     assert sent and "shell" in sent[0]["text"]
+    assert "A — Approve" in sent[0]["text"]
+    assert sent[0]["buttons"][0]["label"] == "A"
+    assert sent[0]["buttons"][1]["label"] == "B"
 
+
+@pytest.mark.asyncio
+async def test_telegram_clarify_letter_buttons() -> None:
+    from lattice.hitl.base import ClarifyRequest
+
+    adapter = TelegramHitlAdapter(timeout_seconds=2)
+    sent: list[dict] = []
+
+    async def send_fn(*, text: str, buttons: list | None = None) -> None:
+        sent.append({"text": text, "buttons": buttons})
+
+    long_a = "Create a full personal-finance ledger with accounts and categories"
+    long_b = "Only track cash expenses for now"
+    adapter.bind_send(send_fn)
+    task = asyncio.create_task(
+        adapter.clarify(
+            ClarifyRequest(question="How should we set up the ledger?", choices=[long_a, long_b])
+        )
+    )
+    for _ in range(50):
+        if adapter._pending:
+            break
+        await asyncio.sleep(0.01)
+    token = next(iter(adapter._pending))
+    assert sent[0]["buttons"] == [
+        {"label": "A", "data": f"hitl:{token}:c0"},
+        {"label": "B", "data": f"hitl:{token}:c1"},
+    ]
+    assert f"A. {long_a}" in sent[0]["text"]
+    assert f"B. {long_b}" in sent[0]["text"]
+    assert adapter.resolve(token, "c1")
+    assert await task == long_b
+
+
+@pytest.mark.asyncio
+async def test_telegram_hitl_cancel_all() -> None:
+    adapter = TelegramHitlAdapter(timeout_seconds=5)
+
+    async def send_fn(*, text: str, buttons: list | None = None) -> None:
+        return None
+
+    adapter.bind_send(send_fn)
+    task = asyncio.create_task(
+        adapter.approve(ApprovalRequest(tool_name="shell", summary="rm"))
+    )
+    for _ in range(50):
+        if adapter._pending:
+            break
+        await asyncio.sleep(0.01)
+    assert adapter.cancel_all("cancel") == 1
+    assert await task == ApprovalDecision.CANCELLED
 
 @pytest.mark.asyncio
 async def test_telegram_hitl_timeout() -> None:

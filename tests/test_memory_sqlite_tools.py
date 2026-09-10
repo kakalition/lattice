@@ -37,3 +37,9 @@ async def test_sqlite_tools(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         await sqlite_query(pool, "notes", "DELETE FROM t")
     await pool.close_all()
+    # restart registry — still sees notes + data file
+    reg2 = SqliteRegistry(LatticeSettings(home=tmp_path))
+    assert any(d.name == "notes" for d in reg2.list())
+    pool2 = SqlitePool(reg2)
+    assert "hello" in await sqlite_query(pool2, "notes", "SELECT v FROM t")
+    await pool2.close_all()

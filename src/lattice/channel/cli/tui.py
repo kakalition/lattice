@@ -98,6 +98,20 @@ class LatticeTui(App[None]):
         if text in {"/quit", "/q"}:
             self.exit()
             return
+        if text.startswith("/profile remove ") or text.startswith("/profile rm "):
+            pid = text.split(maxsplit=2)[2].strip()
+            try:
+                from lattice.profiles import remove_profile
+
+                remove_profile(pid)
+                if self.profile_id == pid:
+                    self.profile_id = "default"
+                    self.session_id = None
+                status.update(f"profile={self.profile_id}")
+                log.write(f"[cyan]removed profile → {pid}[/]")
+            except (ValueError, FileNotFoundError) as exc:
+                log.write(f"[red]{exc}[/]")
+            return
         if text.startswith("/profile "):
             self.profile_id = text.split(maxsplit=1)[1].strip()
             self.session_id = None

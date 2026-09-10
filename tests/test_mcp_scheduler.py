@@ -38,13 +38,13 @@ def test_mcp_defer_and_bridge() -> None:
 
 
 def test_scheduler_jobs_roundtrip(tmp_path: Path) -> None:
-    jobs = [Job(id="j1", prompt="ping", profile="finance", deliver="none", schedule="0 * * * *")]
+    jobs = [Job(id="j1", prompt="ping", profile="work", deliver="none", schedule="0 * * * *")]
     save_jobs(jobs, tmp_path)
     loaded = load_jobs(tmp_path)
-    assert loaded[0].profile == "finance"
+    assert loaded[0].profile == "work"
     inbound = job_to_inbound(loaded[0])
     assert inbound.channel == "scheduler"
-    assert inbound.profile_id == "finance"
+    assert inbound.profile_id == "work"
 
 
 def test_cron_matches() -> None:

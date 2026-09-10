@@ -41,7 +41,7 @@ def version() -> None:
 def init_cmd(
     home: Path | None = typer.Option(None, help="Override Lattice home (default <project>/.lattice)"),
 ) -> None:
-    """Create <project>/.lattice layout, default + finance profiles, skill starters."""
+    """Create <project>/.lattice layout, default profile, and skill starters."""
     root = init_home(home)
     setup_logging()
     console.print(f"initialized {root}")

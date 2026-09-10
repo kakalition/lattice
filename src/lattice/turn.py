@@ -142,7 +142,10 @@ async def run_turn(
         user_content = f"{user_content}\n\n[steer] {inbound.steer_text}"
     if inbound.media_paths:
         paths = ", ".join(str(p) for p in inbound.media_paths)
-        user_content = f"{user_content}\n\n[media] {paths}"
+        user_content = (
+            f"{user_content}\n\n[media] {paths}\n"
+            "(Use the ocr tool on image paths to extract text.)"
+        )
 
     preamble = prompt.user_volatile_preamble()
     run_user_prompt = f"{preamble}\n\n{user_content}" if preamble else user_content

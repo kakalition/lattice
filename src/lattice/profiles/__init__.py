@@ -1,5 +1,11 @@
 from lattice.profiles.load import Profile, ensure_default_profile, load_profile, merge_tool_policy
-from lattice.profiles.store import get_profile, list_profiles, resolve_sticky_profile
+from lattice.profiles.store import (
+    get_profile,
+    list_profiles,
+    remove_profile,
+    resolve_sticky_profile,
+    validate_profile_id,
+)
 
 __all__ = [
     "Profile",
@@ -8,5 +14,7 @@ __all__ = [
     "list_profiles",
     "load_profile",
     "merge_tool_policy",
+    "remove_profile",
     "resolve_sticky_profile",
+    "validate_profile_id",
 ]

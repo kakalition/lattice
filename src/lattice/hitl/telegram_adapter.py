@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from lattice.hitl.base import ApprovalDecision, ApprovalRequest, ClarifyRequest
+from lattice.hitl.choice_menu import letter_choice_menu
 
 
 class TelegramHitlAdapter:
@@ -13,6 +14,8 @@ class TelegramHitlAdapter:
 
     Free-text clarify answers are accepted while a turn is busy (the Telegram
     bot routes the next DM into ``resolve_text`` instead of queueing a new turn).
+
+    Choice / approve UX: full text in the message as ``A. …``, buttons labeled A/B/C.
     """
 
     def __init__(self, *, timeout_seconds: int = 600, send_fn: Any = None) -> None:
@@ -29,10 +32,24 @@ class TelegramHitlAdapter:
     def set_active_user(self, user_id: str | None) -> None:
         self._active_user = user_id
 
-    def resolve(self, token: str, value: str) -> None:
+    def resolve(self, token: str, value: str) -> bool:
+        """Resolve a pending HITL future. Returns True if a waiter was woken."""
         fut = self._pending.get(token)
         if fut and not fut.done():
             fut.set_result(value)
+            return True
+        return False
+
+    def cancel_all(self, value: str = "cancel") -> int:
+        """Resolve every pending HITL waiter (e.g. /stop). Returns count cleared."""
+        n = 0
+        for token, fut in list(self._pending.items()):
+            if not fut.done():
+                fut.set_result(value)
+                n += 1
+            self._pending.pop(token, None)
+        self._text_waiters.clear()
+        return n
 
     def resolve_text(self, user_id: str, text: str) -> bool:
         """If this user has a pending free-text clarify, resolve it. Returns True if consumed."""
@@ -59,11 +76,16 @@ class TelegramHitlAdapter:
         fut: asyncio.Future[str] = loop.create_future()
         self._pending[token] = fut
         if self._send_fn:
+            body = (
+                f"Approve `{req.tool_name}`?\n{req.summary}\n\n"
+                "A — Approve\n"
+                "B — Deny"
+            )
             await self._send_fn(
-                text=f"Approve `{req.tool_name}`?\n{req.summary}",
+                text=body,
                 buttons=[
-                    {"label": "Approve", "data": f"hitl:{token}:approve"},
-                    {"label": "Deny", "data": f"hitl:{token}:deny"},
+                    {"label": "A", "data": f"hitl:{token}:approve"},
+                    {"label": "B", "data": f"hitl:{token}:deny"},
                 ],
             )
         try:
@@ -86,12 +108,16 @@ class TelegramHitlAdapter:
         user = self._active_user
         if user:
             self._text_waiters[user] = token
-        buttons = [
-            {"label": c[:40], "data": f"hitl:{token}:c{i}"} for i, c in enumerate(req.choices)
-        ]
-        prompt = req.question
-        if not buttons:
+        if req.choices:
+            prompt, buttons = letter_choice_menu(
+                req.question,
+                list(req.choices),
+                data_for_index=lambda i: f"hitl:{token}:c{i}",
+            )
+            prompt = f"{prompt}\n\n(or reply with text)"
+        else:
             prompt = f"{req.question}\n\n(reply with text)"
+            buttons = []
         if self._send_fn:
             await self._send_fn(text=prompt, buttons=buttons or None)
         try:

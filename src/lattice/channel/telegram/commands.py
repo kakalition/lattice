@@ -11,5 +11,5 @@ COMMANDS = [
     ("forget", "Forget a memory id"),
     ("model", "Show current model"),
     ("tools", "List enabled tool policy"),
-    ("profile", "Switch profile"),
+    ("profile", "Switch or remove profile"),
 ]

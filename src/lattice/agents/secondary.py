@@ -13,10 +13,11 @@ from lattice.providers.settings import secondary_model_name
 from lattice.sqlite import sqlite_list, sqlite_query, sqlite_schema
 from lattice.tools.deadline import with_deadline
 from lattice.tools.file import read_file, search_files
+from lattice.tools.ocr import ocr_image
 from lattice.tools.web import web_fetch, web_search
 
 if TYPE_CHECKING:
-    from lattice.agent_app import TurnDeps
+    from lattice.deps import TurnDeps
 
 # Fixed order — do not reorder (prompt-cache / tool schema stability).
 SECONDARY_TOOL_NAMES = [
@@ -24,6 +25,7 @@ SECONDARY_TOOL_NAMES = [
     "web_fetch",
     "read_file",
     "search_files",
+    "ocr",
     "sqlite_list",
     "sqlite_schema",
     "sqlite_query",
@@ -39,7 +41,7 @@ _agent_cache: dict[str, Agent[Any, str]] = {}
 
 
 def _build_secondary_agent(settings: LatticeSettings, model_id: str) -> Agent[Any, str]:
-    from lattice.agent_app import TurnDeps, traced
+    from lattice.deps import TurnDeps, traced
 
     agent: Agent[TurnDeps, str] = Agent(
         build_openai_model(settings, model_id),
@@ -72,7 +74,9 @@ def _build_secondary_agent(settings: LatticeSettings, model_id: str) -> Agent[An
             ctx,
             "read_file",
             {"path": path},
-            lambda: read_file(path, workspace=ctx.deps.workspace),
+            lambda: read_file(
+                path, workspace=ctx.deps.workspace, home=ctx.deps.settings.home
+            ),
         )
 
     @agent.tool
@@ -84,6 +88,17 @@ def _build_secondary_agent(settings: LatticeSettings, model_id: str) -> Agent[An
             "search_files",
             {"pattern": pattern, "glob": glob},
             lambda: search_files(pattern, workspace=ctx.deps.workspace, glob=glob),
+        )
+
+    @agent.tool
+    async def ocr_tool(ctx: RunContext[TurnDeps], path: str) -> str:
+        if "ocr" not in ctx.deps.enabled_tools:
+            return "tool not allowed"
+        return await traced(
+            ctx,
+            "ocr",
+            {"path": path},
+            lambda: ocr_image(path, workspace=ctx.deps.workspace, home=ctx.deps.settings.home),
         )
 
     @agent.tool
@@ -150,8 +165,8 @@ async def run_secondary(
     context: str = "",
 ) -> str:
     """Run a depth-1 secondary worker. Refuses nested delegate."""
-    from lattice.agent_app import TurnDeps as TD
-    from lattice.agent_app import truncate_result
+    from lattice.deps import TurnDeps as TD
+    from lattice.deps import truncate_result
 
     if getattr(deps, "delegate_depth", 0) > 0:
         return "error: nested delegate is not allowed"

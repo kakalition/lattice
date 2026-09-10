@@ -214,6 +214,20 @@ class SessionStore:
         finally:
             await conn.close()
 
+    async def clear_sticky_for_profile(self, profile_id: str) -> int:
+        """Clear sticky mappings that pointed at a removed profile. Returns rows cleared."""
+        async with _LOCK:
+            conn = await self.connect()
+            try:
+                cur = await conn.execute(
+                    "DELETE FROM sticky_profiles WHERE profile_id = ?",
+                    (profile_id,),
+                )
+                await conn.commit()
+                return cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+            finally:
+                await conn.close()
+
 
 def sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Resume sanitization: drop surrogates and repair orphan tool pairs."""

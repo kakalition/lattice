@@ -15,6 +15,7 @@ Reference inventory from [`references/hermes-agent/`](../references/hermes-agent
 | `clarify` / `todo_list` / `session_search` | `clarify` / `todo` / `session_search` | |
 | `memory` | `memory_search` / `add` / `update` / `forget` | Split API |
 | Tool Search / MCP | `tool_search` / `tool_describe` / `tool_invoke` | Lite bridge |
+| — | `ocr` | RapidOCR local ONNX; inbound images under workspace |
 | — | `sqlite_*` suite | Lattice-only |
 | `cronjob_manage` | `scheduler/` domain | Not a model tool |
 
@@ -23,7 +24,7 @@ Reference inventory from [`references/hermes-agent/`](../references/hermes-agent
 | Hermes | Why deferred |
 |--------|----------------|
 | `process_manage` | Background shell job control |
-| `skill_manage` | Create/edit skills at runtime |
+| `skill_manage` | Prefer Lattice skills `skill-authoring` / `profile-authoring` + `write_file` |
 | `vision_analyze` | Aux vision for inbound images |
 
 ### Skip (v1)
@@ -34,7 +35,7 @@ Browser stack (`browser_*`, `browser_exec`), `computer_use`, `execute_code`, `de
 
 ### Keep (Lattice starters)
 
-`session-hygiene`, `safe-shell`, `web-research`, `sqlite-admin`
+`session-hygiene`, `safe-shell`, `web-research`, `sqlite-admin`, `telegram-chat`, `skill-authoring`, `profile-authoring`
 
 ### Adapted (Lattice-native rewrites)
 
