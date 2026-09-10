@@ -94,7 +94,8 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
 
 
 def load_settings(home: Path | None = None) -> LatticeSettings:
-    """Load settings from ~/.lattice/config.yaml then env overrides."""
+    """Load settings from YAML + project/.lattice .env + process env."""
+    _load_dotenv_files(home)
     root = home or lattice_home()
     data: dict[str, Any] = {"home": root}
     config_path = root / "config.yaml"
@@ -102,9 +103,73 @@ def load_settings(home: Path | None = None) -> LatticeSettings:
         loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         if isinstance(loaded, dict):
             data = _deep_merge(data, loaded)
+    data = _apply_compat_env(data)
     env_path = root / ".env"
     settings = LatticeSettings(_env_file=env_path if env_path.is_file() else None, **data)
     return settings
+
+
+def _load_dotenv_files(home: Path | None = None) -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    # Project cwd .env first (dev), then ~/.lattice/.env
+    load_dotenv(Path.cwd() / ".env", override=False)
+    root = home or lattice_home()
+    load_dotenv(root / ".env", override=False)
+
+
+def _apply_compat_env(data: dict[str, Any]) -> dict[str, Any]:
+    """Map common third-party env names into Lattice settings shape."""
+    import os
+
+    out = dict(data)
+    provider = dict(out.get("provider") or {})
+    agent = dict(out.get("agent") or {})
+    telegram = dict(out.get("telegram") or {})
+
+    if not provider.get("api_key"):
+        key = (
+            os.environ.get("LATTICE_PROVIDER__API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY")
+        )
+        if key:
+            provider["api_key"] = key
+    if not provider.get("base_url"):
+        base = os.environ.get("LATTICE_PROVIDER__BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+        if not base and os.environ.get("OPENROUTER_API_KEY"):
+            base = "https://openrouter.ai/api/v1"
+        if base:
+            provider["base_url"] = base
+    if (
+        os.environ.get("OPENROUTER_MODEL")
+        and os.environ.get("OPENROUTER_API_KEY")
+        and agent.get("model") in (None, "openai:gpt-4o")
+    ):
+        agent["model"] = os.environ["OPENROUTER_MODEL"]
+        agent.setdefault("auxiliary_model", os.environ["OPENROUTER_MODEL"])
+    if not telegram.get("token"):
+        tok = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("LATTICE_TELEGRAM__TOKEN")
+        if tok:
+            telegram["token"] = tok
+    if not telegram.get("allowlist"):
+        chat = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("TELEGRAM_ALLOWLIST")
+        if chat:
+            import contextlib
+
+            with contextlib.suppress(ValueError):
+                telegram["allowlist"] = [int(x.strip()) for x in chat.split(",") if x.strip()]
+
+    out["provider"] = provider
+    out["agent"] = agent
+    out["telegram"] = telegram
+    if not out.get("tavily_api_key"):
+        tav = os.environ.get("LATTICE_TAVILY_API_KEY") or os.environ.get("TAVILY_API_KEY")
+        if tav:
+            out["tavily_api_key"] = tav
+    return out
 
 
 def default_config_yaml() -> str:

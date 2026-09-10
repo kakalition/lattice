@@ -8,11 +8,16 @@ See [docs/PLAN.md](docs/PLAN.md) for the full product plan.
 
 ```bash
 uv sync --extra dev
+# Project .env (also supported: ~/.lattice/.env)
+# OPENROUTER_API_KEY=...
+# OPENROUTER_MODEL=...
+# TELEGRAM_TOKEN=...
+# TELEGRAM_CHAT_ID=...
+# or OPENAI_API_KEY=...
 uv run lattice init
-export OPENAI_API_KEY=...
+uv run lattice doctor
 uv run lattice chat -p default
 uv run lattice chat --tui -p finance
-uv run lattice doctor
 ```
 
 Gateway (Telegram + scheduler):
@@ -33,5 +38,6 @@ uv run lattice gateway
 ```bash
 uv run ruff check src tests
 uv run ruff format src tests
-uv run pytest
+uv run pytest                 # unit only (default)
+uv run pytest -m integration  # live LLM/Tavily when .env keys present
 ```

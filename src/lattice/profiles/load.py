@@ -108,7 +108,7 @@ DEFAULT_PROFILE_YAML = """\
 name: default
 description: Default Lattice profile
 skills:
-  prefer: [session-hygiene, safe-shell, web-research, sqlite-admin]
+  prefer: [session-hygiene, safe-shell, web-research, sqlite-admin, cited-research, weekly-review]
 tools:
   allow: ["*"]
   deny: []

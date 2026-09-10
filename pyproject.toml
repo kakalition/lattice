@@ -20,6 +20,7 @@ dependencies = [
     "tavily-python>=0.5.0",
     "textual>=1.0.0",
     "typer>=0.15.0",
+    "python-dotenv>=1.2.3",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +69,10 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: live checks needing API keys (deselect with -m 'not integration')",
+]
+addopts = "-m 'not integration'"
 
 [tool.basedpyright]
 include = ["src", "tests"]

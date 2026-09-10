@@ -94,12 +94,18 @@ def test_init_and_skills(tmp_path: Path) -> None:
     skills = scan_skills(root)
     names = {s.name for s in skills}
     assert "sqlite-admin" in names
+    assert "cited-research" in names
+    assert "weekly-review" in names
+    assert "office-xlsx" in names
     entries = skill_index_entries(skills, prefer=["sqlite-admin"], disable=["safe-shell"])
     assert entries[0][0] == "sqlite-admin"
     body = skill_view("sqlite-admin", skills)
     assert "sqlite_backup" in body
+    cited = skill_view("cited-research", skills)
+    assert "Sources:" in cited
     profile = load_profile("finance", root)
     assert "shell" in profile.tools_deny
+    assert "cited-research" in profile.skills_prefer
 
 
 @pytest.mark.asyncio

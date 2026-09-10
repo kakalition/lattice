@@ -46,6 +46,7 @@ async def run_turn(
     session_store: SessionStore | None = None,
     mcp: McpHostManager | None = None,
     cancel_event: asyncio.Event | None = None,
+    model: Any | None = None,
 ) -> Outbound:
     settings = settings or load_settings()
     events = events or NullTurnEvents()
@@ -154,9 +155,12 @@ async def run_turn(
     messages.append({"role": "user", "content": user_content})
     await store.save_messages(session_id, messages)
 
-    agent = create_agent(settings, profile, system_prompt=system_prompt)
+    agent = create_agent(settings, profile, system_prompt=system_prompt, model=model)
 
     async def _run_once(model_override: str | None = None) -> str:
+        if model is not None and model_override is None:
+            result = await agent.run(user_content, deps=deps)
+            return str(result.output)
         if model_override:
             from copy import deepcopy
 

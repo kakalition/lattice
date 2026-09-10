@@ -143,10 +143,14 @@ def build_prompt_bundle(
 
 
 def create_agent(
-    settings: LatticeSettings, profile: Profile, *, system_prompt: str
+    settings: LatticeSettings,
+    profile: Profile,
+    *,
+    system_prompt: str,
+    model: Any | None = None,
 ) -> Agent[TurnDeps, str]:
-    model = build_openai_model(settings, profile.model)
-    agent: Agent[TurnDeps, str] = Agent(model, deps_type=TurnDeps, system_prompt=system_prompt)
+    resolved = model or build_openai_model(settings, profile.model)
+    agent: Agent[TurnDeps, str] = Agent(resolved, deps_type=TurnDeps, system_prompt=system_prompt)
 
     @agent.tool
     async def shell(ctx: RunContext[TurnDeps], command: str, timeout: float = 60.0) -> str:
