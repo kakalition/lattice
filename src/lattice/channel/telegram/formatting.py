@@ -11,18 +11,61 @@ _LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _ITALIC = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _PLACEHOLDER = re.compile(r"\x00(\d+)\x00")
+_TABLE_SEP = re.compile(r"^\s*\|?[\s\-:|]+\|[\s\-:|]*\|?\s*$")
 
 
 def escape_html(text: str) -> str:
     return html.escape(text, quote=False)
 
 
+def _split_row(line: str) -> list[str]:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def markdown_tables_to_lists(text: str) -> str:
+    """Rewrite pipe tables into labeled bullets (Telegram-friendly)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if (
+            "|" in line
+            and i + 1 < len(lines)
+            and _TABLE_SEP.match(lines[i + 1])
+            and not line.strip().startswith("```")
+        ):
+            headers = _split_row(line)
+            i += 2  # skip header + separator
+            while i < len(lines) and "|" in lines[i] and not _TABLE_SEP.match(lines[i]):
+                cells = _split_row(lines[i])
+                parts: list[str] = []
+                for h, c in zip(headers, cells, strict=False):
+                    if not c or c == "-":
+                        continue
+                    label = h or "field"
+                    parts.append(f"**{label}** — {c}" if label else c)
+                if parts:
+                    out.append("- " + "; ".join(parts))
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
 def markdown_to_telegram_html(text: str) -> str:
     """Convert common Markdown emphasis to Telegram HTML; escape everything else.
 
     Handles fenced/inline code, links, ``**bold**``, and ``*italic*``.
-    Snake_case underscores are left alone (no ``_italic_``).
+    Pipe tables are rewritten to bullets first. Snake_case underscores stay plain.
     """
+    text = markdown_tables_to_lists(text)
     held: list[str] = []
 
     def hold(fragment: str) -> str:

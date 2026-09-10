@@ -26,8 +26,10 @@ from lattice.providers import (
     recovery_action,
 )
 from lattice.providers.fallback_cooldown import FallbackCooldown
+from lattice.providers.settings import resolve_model_id
 from lattice.runtime import set_cwd
 from lattice.session import SessionStore, sanitize_messages
+from lattice.session_history import session_dicts_to_history
 from lattice.skills import scan_skills, skill_index_entries
 from lattice.sqlite import SqlitePool, SqliteRegistry
 from lattice.tools.deadline import with_deadline
@@ -98,6 +100,14 @@ async def run_turn(
     if prefetch:
         notices.append("Relevant memories:\n" + "\n".join(f"- {h.get('text')}" for h in prefetch))
 
+    # Telegram: inject UX skill body so formatting rules apply without relying on skill_view
+    if inbound.channel == "telegram":
+        from lattice.skills.activate import activate_skill
+
+        tg_skill = activate_skill("telegram-chat", skills)
+        if not tg_skill.startswith("skill not found"):
+            notices.append(tg_skill)
+
     pressure = PressureConfig(ratio=settings.agent.context_pressure_ratio)
     if pressure.is_over_pressure(messages):
         await events.on_status("compressing context")
@@ -121,7 +131,7 @@ async def run_turn(
             messages = result.messages
 
     prompt = build_prompt_bundle(profile, entries, notices)
-    system_prompt = prompt.system_prompt()
+    system_prompt = prompt.stable_system_prompt()
 
     registry = SqliteRegistry(settings)
     pool = SqlitePool(registry)
@@ -133,6 +143,12 @@ async def run_turn(
     if inbound.media_paths:
         paths = ", ".join(str(p) for p in inbound.media_paths)
         user_content = f"{user_content}\n\n[media] {paths}"
+
+    preamble = prompt.user_volatile_preamble()
+    run_user_prompt = f"{preamble}\n\n{user_content}" if preamble else user_content
+
+    # History before this turn (cacheable prefix); current user saved separately
+    history = session_dicts_to_history(messages)
 
     trace.log_begin(
         channel=inbound.channel,
@@ -166,21 +182,28 @@ async def run_turn(
     messages.append({"role": "user", "content": user_content})
     await store.save_messages(session_id, messages)
 
+    primary_id = resolve_model_id(
+        settings, profile_model=profile.primary_model or profile.model
+    )
     agent = create_agent(settings, profile, system_prompt=system_prompt, model=model)
 
     async def _run_once(model_override: str | None = None) -> str:
+        kwargs: dict[str, Any] = {
+            "deps": deps,
+            "message_history": history or None,
+        }
         if model is not None and model_override is None:
-            result = await agent.run(user_content, deps=deps)
+            result = await agent.run(run_user_prompt, **kwargs)
             return str(result.output)
         if model_override:
             from copy import deepcopy
 
             s2 = deepcopy(settings)
-            s2.agent.model = model_override
+            s2.agent.primary_model = model_override
             local_agent = create_agent(s2, profile, system_prompt=system_prompt)
-            result = await local_agent.run(user_content, deps=deps)
+            result = await local_agent.run(run_user_prompt, **kwargs)
             return str(result.output)
-        result = await agent.run(user_content, deps=deps)
+        result = await agent.run(run_user_prompt, **kwargs)
         return str(result.output)
 
     await events.on_status("thinking")
@@ -244,7 +267,7 @@ async def run_turn(
     finally:
         if text:
             messages.append({"role": "assistant", "content": text})
-            usage = {"model": profile.model or settings.agent.model}
+            usage = {"model": primary_id}
             await store.save_messages(session_id, messages, usage=usage)
             await memory.sync_turn(messages[-4:])
         await pool.close_all()

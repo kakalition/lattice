@@ -5,8 +5,10 @@
 timezone: Asia/Jakarta
 
 agent:
-  model: deepseek/deepseek-v4.1-flash
+  primary_model: deepseek/deepseek-v4.1-flash
+  secondary_model: inception/mercury-2.5
   auxiliary_model: inception/mercury-2.5
+  secondary_max_iterations: 8
   iteration_budget: 40
   hitl_timeout_seconds: 600
   workspace: null

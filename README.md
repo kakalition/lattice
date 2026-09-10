@@ -32,6 +32,17 @@ uv run lattice gateway
 - **`.env`** — secrets only (API keys, Telegram token)
 - **`.lattice/`** — runtime data only (state, logs, qdrant, jobs)
 
+### Models (`lattice.yaml`)
+
+| Key | Role |
+|-----|------|
+| `agent.primary_model` | Orchestrator (user-facing turn) |
+| `agent.secondary_model` | Depth-1 worker via `delegate` tool |
+| `agent.auxiliary_model` | Context compression only |
+| `provider.fallback_model` | Rate-limit failover for primary |
+
+Prompt caching: primary keeps a stable system prefix (SOUL/USER/skills/routing) and passes session `message_history`; volatile notices go in the user tail. Secondary uses a constant system prompt and fixed tool schemas.
+
 ## Dev
 
 ```bash

@@ -169,7 +169,7 @@ class TelegramBot:
             )
 
         async def on_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            await update.message.reply_text(self.settings.agent.model)
+            await update.message.reply_text(self.settings.agent.primary_model)
 
         async def on_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(

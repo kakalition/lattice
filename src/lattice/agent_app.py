@@ -67,6 +67,7 @@ class TurnDeps:
     user_id: str = "local"
     channel: str = "cli"
     cooldown: FallbackCooldown = field(default_factory=FallbackCooldown)
+    delegate_depth: int = 0
 
 
 CORE_TOOL_NAMES = [
@@ -79,6 +80,7 @@ CORE_TOOL_NAMES = [
     "web_fetch",
     "clarify",
     "todo",
+    "delegate",
     "schedule_add",
     "schedule_list",
     "schedule_cancel",
@@ -186,7 +188,10 @@ def create_agent(
     system_prompt: str,
     model: Any | None = None,
 ) -> Agent[TurnDeps, str]:
-    resolved = model or build_openai_model(settings, profile.model)
+    from lattice.providers.settings import resolve_model_id
+
+    primary = profile.primary_model or profile.model
+    resolved = model or build_openai_model(settings, resolve_model_id(settings, profile_model=primary))
     agent: Agent[TurnDeps, str] = Agent(resolved, deps_type=TurnDeps, system_prompt=system_prompt)
 
     @agent.tool
@@ -307,6 +312,27 @@ def create_agent(
             return ctx.deps.todos.render()
 
         return await traced(ctx, "todo", {"action": action, "text": text, "item_id": item_id}, _op)
+
+    @agent.tool
+    async def delegate_tool(ctx: RunContext[TurnDeps], task: str, context: str = "") -> str:
+        """Delegate a bounded research/analysis task to the secondary worker model.
+        Use for web/file/sqlite lookups; synthesize the result yourself for the user."""
+        if "delegate" not in ctx.deps.enabled_tools:
+            return "tool not allowed"
+        if ctx.deps.delegate_depth > 0:
+            return "error: nested delegate is not allowed"
+        from lattice.agents.secondary import run_secondary
+        from lattice.providers.settings import secondary_model_name
+
+        mid = secondary_model_name(
+            ctx.deps.settings, profile_secondary=ctx.deps.profile.secondary_model
+        )
+        return await traced(
+            ctx,
+            "delegate",
+            {"task": task, "context": context, "secondary_model": mid},
+            lambda: run_secondary(ctx.deps, task=task, context=context),
+        )
 
     @agent.tool
     async def schedule_add_tool(
@@ -605,6 +631,7 @@ def create_agent(
         "web_fetch": web_fetch_tool,
         "clarify": clarify,
         "todo": todo,
+        "delegate": delegate_tool,
         "schedule_add": schedule_add_tool,
         "schedule_list": schedule_list_tool,
         "schedule_cancel": schedule_cancel_tool,

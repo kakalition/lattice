@@ -128,18 +128,97 @@ def test_timezone_set_and_get(tmp_path: Path) -> None:
 
 def test_models_come_from_lattice_yaml(tmp_path: Path) -> None:
     from lattice.config import load_settings, merge_yaml_into
-    from lattice.providers.settings import auxiliary_model_name, resolve_model_id
+    from lattice.providers.settings import (
+        auxiliary_model_name,
+        resolve_model_id,
+        secondary_model_name,
+    )
 
     merge_yaml_into(
         tmp_path / "lattice.yaml",
         {
             "agent": {
-                "model": "deepseek/deepseek-v4.1-flash",
+                "primary_model": "deepseek/deepseek-v4.1-flash",
+                "secondary_model": "inception/mercury-2.5",
                 "auxiliary_model": "inception/mercury-2.5",
-            }
+            },
+            "provider": {"fallback_model": "inception/mercury-2.5"},
         },
     )
     settings = load_settings(tmp_path)
     assert resolve_model_id(settings) == "deepseek/deepseek-v4.1-flash"
+    assert secondary_model_name(settings) == "inception/mercury-2.5"
     assert auxiliary_model_name(settings) == "inception/mercury-2.5"
     assert settings.provider.fallback_model == "inception/mercury-2.5"
+
+
+def test_legacy_agent_model_alias(tmp_path: Path) -> None:
+    from lattice.config import load_settings, merge_yaml_into
+    from lattice.providers.settings import resolve_model_id
+
+    merge_yaml_into(tmp_path / "lattice.yaml", {"agent": {"model": "legacy/model"}})
+    settings = load_settings(tmp_path)
+    assert resolve_model_id(settings) == "legacy/model"
+
+
+def test_secondary_refuses_nested_delegate(tmp_path: Path) -> None:
+    import asyncio
+
+    from lattice.agent_app import TurnDeps
+    from lattice.agents.secondary import run_secondary
+    from lattice.config import LatticeSettings
+    from lattice.events import NullTurnEvents
+    from lattice.hitl import AutoApproveHitl
+    from lattice.mcp import McpHostManager
+    from lattice.profiles.load import Profile
+    from lattice.session import SessionStore
+    from lattice.sqlite import SqlitePool, SqliteRegistry
+
+    class _Mem:
+        async def search(self, *a, **k):
+            return []
+
+        async def add(self, *a, **k):
+            return "x"
+
+        async def update(self, *a, **k):
+            return None
+
+        async def forget(self, *a, **k):
+            return None
+
+        async def sync_turn(self, *a, **k):
+            return None
+
+    settings = LatticeSettings(home=tmp_path)
+    registry = SqliteRegistry(settings)
+    deps = TurnDeps(
+        settings=settings,
+        profile=Profile(id="default"),
+        hitl=AutoApproveHitl(approve_all=True),
+        session=SessionStore(tmp_path / "state.db"),
+        session_id="s",
+        memory=_Mem(),  # type: ignore[arg-type]
+        sqlite_registry=registry,
+        sqlite_pool=SqlitePool(registry),
+        mcp=McpHostManager(),
+        events=NullTurnEvents(),
+        workspace=tmp_path,
+        enabled_tools=["web_search"],
+        delegate_depth=1,
+    )
+    out = asyncio.run(run_secondary(deps, task="find x"))
+    assert "nested" in out
+
+
+def test_session_dicts_to_history() -> None:
+    from lattice.session_history import session_dicts_to_history
+
+    hist = session_dicts_to_history(
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "tool", "content": "ignored"},
+        ]
+    )
+    assert len(hist) == 2

@@ -50,8 +50,10 @@ class TelegramConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     workspace: Path | None = None
-    model: str = "openai:gpt-4o"
+    primary_model: str = "openai:gpt-4o"
+    secondary_model: str = "openai:gpt-4o-mini"
     auxiliary_model: str = "openai:gpt-4o-mini"
+    secondary_max_iterations: int = 8
     iteration_budget: int = 40
     hitl_timeout_seconds: int = 600
     context_pressure_ratio: float = 0.5
@@ -125,6 +127,18 @@ def merge_yaml_into(path: Path, updates: dict[str, Any]) -> Path:
     return path
 
 
+def _normalize_agent_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """Map legacy agent.model → primary_model; drop unknown secret-like fields already scrubbed."""
+    out = dict(data)
+    agent = dict(out.get("agent") or {})
+    if "primary_model" not in agent and agent.get("model"):
+        agent["primary_model"] = agent.pop("model")
+    elif "model" in agent:
+        agent.pop("model", None)
+    out["agent"] = agent
+    return out
+
+
 def load_settings(home: Path | None = None) -> LatticeSettings:
     """Load non-secret lattice.yaml + secrets exclusively from .env."""
     _load_dotenv_files(home)
@@ -132,6 +146,7 @@ def load_settings(home: Path | None = None) -> LatticeSettings:
     data: dict[str, Any] = {"home": root}
     # Visible project config only (legacy .lattice/config.yaml ignored for settings)
     data = _deep_merge(data, _scrub_secrets(_load_yaml(user_config_path(home))))
+    data = _normalize_agent_keys(data)
     data = _apply_compat_env(data)
     # Do not pass a YAML _env_file for secrets — project .env already loaded into os.environ
     settings = LatticeSettings(**data)
@@ -175,10 +190,6 @@ def _apply_compat_env(data: dict[str, Any]) -> dict[str, Any]:
     if base:
         provider["base_url"] = base
 
-    # Fallback model defaults to auxiliary when unset in yaml
-    if not provider.get("fallback_model") and agent.get("auxiliary_model"):
-        provider["fallback_model"] = agent["auxiliary_model"]
-
     tok = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("LATTICE_TELEGRAM__TOKEN")
     if tok:
         telegram["token"] = tok
@@ -213,8 +224,10 @@ def default_config_yaml() -> str:
 timezone: Asia/Jakarta
 
 agent:
-  model: deepseek/deepseek-v4.1-flash
+  primary_model: deepseek/deepseek-v4.1-flash
+  secondary_model: inception/mercury-2.5
   auxiliary_model: inception/mercury-2.5
+  secondary_max_iterations: 8
   iteration_budget: 40
   hitl_timeout_seconds: 600
   workspace: null

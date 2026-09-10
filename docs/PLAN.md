@@ -1,6 +1,6 @@
 ---
 name: Lattice Python Agent
-overview: Thin-waist personal agent with named profiles, multi-SQLite, rich TUI + Telegram-native UX, Pydantic AI + MCP + mem0/Qdrant; selective skills/MCP; Hermes reliability hardening in v1; no Lang stack, no subagents.
+overview: Thin-waist personal agent with named profiles, multi-SQLite, rich TUI + Telegram-native UX, Pydantic AI + MCP + mem0/Qdrant; selective skills/MCP; Hermes reliability hardening in v1; depth-1 `delegate` secondary worker (no deep nesting).
 status: parked — execute when ready (do not start implementation until explicitly asked)
 source: synced from ~/.cursor/plans/lattice_go_agent_04117ff3.plan.md on 2026-09-10
 todos:
@@ -222,7 +222,7 @@ Waist modules: `turn.py`, `agent_app.py`, `prompt.py`, `session.py`, `config.py`
 | `skills_list` / `skill_view` | skills tools | Progressive skills; bodies not in system prompt |
 | `tool_search` / `tool_describe` (+ invoke) | Tool Search | Deferred MCP long-tail; only when MCP configured |
 
-**Not shipping:** `delegate_task` / subagents (v1). Parallel work = one agent + tools, or later A2A/MCP.
+**Shipping (scoped):** depth-1 `delegate` → secondary worker model (`agent.secondary_model`). No nested delegate, no multi-role secondary zoo. Parallel work remains one primary agent + tools, or later A2A/MCP.
 
 **Also available without shipping code:** any tool from user-configured **MCP servers**.
 

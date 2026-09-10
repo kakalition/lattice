@@ -28,18 +28,22 @@ def resolve_base_url(settings: LatticeSettings) -> str | None:
 
 
 def resolve_model_id(settings: LatticeSettings, *, profile_model: str | None = None) -> str:
+    """Primary (orchestrator) model id."""
     if profile_model:
         return profile_model
-    return settings.agent.model
+    return settings.agent.primary_model
 
 
 def model_name(settings: LatticeSettings, *, profile_model: str | None = None) -> str:
     return resolve_model_id(settings, profile_model=profile_model)
 
 
+def secondary_model_name(settings: LatticeSettings, *, profile_secondary: str | None = None) -> str:
+    return profile_secondary or settings.agent.secondary_model
+
+
 def auxiliary_model_name(settings: LatticeSettings, *, profile_aux: str | None = None) -> str:
     return profile_aux or settings.agent.auxiliary_model
-
 
 
 def apply_provider_env(provider: ProviderConfig) -> None:

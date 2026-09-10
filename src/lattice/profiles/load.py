@@ -24,7 +24,9 @@ class Profile:
     tools_deny: list[str] = field(default_factory=list)
     sqlite_allow: list[str] | None = None
     memory_collection: str | None = None
-    model: str | None = None
+    model: str | None = None  # legacy alias for primary_model
+    primary_model: str | None = None
+    secondary_model: str | None = None
     auxiliary_model: str | None = None
     workspace: Path | None = None
     root: Path | None = None
@@ -91,7 +93,9 @@ def load_profile(profile_id: str, home: Path | None = None) -> Profile:
         tools_deny=list(tools.get("deny") or []),
         sqlite_allow=list(sqlite["allow"]) if "allow" in sqlite else None,
         memory_collection=memory.get("collection"),
-        model=data.get("model"),
+        model=data.get("primary_model") or data.get("model"),
+        primary_model=data.get("primary_model") or data.get("model"),
+        secondary_model=data.get("secondary_model"),
         auxiliary_model=data.get("auxiliary_model"),
         workspace=Path(workspace).expanduser() if workspace else None,
         root=root,
@@ -108,7 +112,7 @@ DEFAULT_PROFILE_YAML = """\
 name: default
 description: Default Lattice profile
 skills:
-  prefer: [session-hygiene, safe-shell, web-research, sqlite-admin, cited-research, weekly-review]
+  prefer: [telegram-chat, session-hygiene, safe-shell, web-research, sqlite-admin, cited-research, weekly-review]
 tools:
   allow: ["*"]
   deny: []

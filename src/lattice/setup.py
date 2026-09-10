@@ -141,6 +141,52 @@ Use for spreadsheet create/inspect/edit and CSV interop. Not for legacy `.xls`
 - Assuming Excel is installed; stick to openpyxl/CSV unless the user confirms otherwise.
 """,
     ),
+    "telegram-chat": (
+        "Format Telegram replies for mobile UX: no raw tables/code dumps; short scannable messages.",
+        """---
+name: telegram-chat
+description: "Format Telegram replies for mobile UX: no raw tables/code dumps; short scannable messages."
+---
+# Telegram chat UX
+Use for every reply when the channel is Telegram (DM). Load this skill before drafting the user-facing answer.
+
+## Goals
+- Easy to read on a phone in under a few seconds of scrolling.
+- Prefer meaning over density. Cut filler.
+
+## Do
+- Lead with the answer in 1–3 short sentences (or a tight numbered list).
+- Use **bold** sparingly for key labels; short bullet lists (`- item`) for options/steps.
+- Keep messages under ~1500 characters when possible; split into clear sections with blank lines.
+- Turn tabular data into bullets or short labeled lines:
+  - **Name** — value
+  - **Status** — open
+- For comparisons: one bullet per item with the decisive fields only.
+- For long tool/search dumps: summarize; offer 2–5 highlights + sources as links if useful.
+- Use `schedule_add` / reminders with plain time language the user already used.
+
+## Don't
+- Do **not** paste Markdown tables (`| col | col |`) — they look broken in Telegram.
+- Do **not** dump wide SQL result grids, CSV, or ASCII art tables.
+- Do **not** wrap the whole answer in a code fence.
+- Do **not** spam emoji; at most one if it clarifies tone.
+- Do **not** repeat the user's question verbatim as a heading.
+
+## Shape examples
+Good:
+```
+Here's a simple nighttime routine:
+
+1. **Dim lights** 30 min before bed
+2. **No screens** in that window
+3. **Cool room** (~18–20°C)
+
+Want this as a 22:45 reminder?
+```
+
+Bad: a markdown table of tips, or a 4k paste of search snippets.
+""",
+    ),
 }
 
 
@@ -164,12 +210,12 @@ def write_finance_profile(home: Path | None = None) -> Path:
 name: finance
 description: Personal finance analyst
 skills:
-  prefer: [sqlite-admin, web-research, session-hygiene, cited-research]
+  prefer: [telegram-chat, sqlite-admin, web-research, session-hygiene, cited-research]
   disable: [safe-shell]
 tools:
   allow: [sqlite_*, web_*, read_file, search_files, clarify, todo,
           schedule_add, schedule_list, schedule_cancel, timezone_get, timezone_set,
-          session_search, memory_*, skills_list, skill_view,
+          delegate, session_search, memory_*, skills_list, skill_view,
           tool_search, tool_describe, tool_invoke]
   deny: [shell, write_file, edit_file]
 sqlite:
@@ -248,11 +294,19 @@ def doctor_report(home: Path | None = None) -> list[str]:
     lines.append(f"home: {root} exists={root.is_dir()}")
     settings = load_settings(root) if root.is_dir() else None
     if settings:
-        from lattice.providers.settings import resolve_base_url, resolve_model_id
+        from lattice.providers.settings import (
+            auxiliary_model_name,
+            resolve_base_url,
+            resolve_model_id,
+            secondary_model_name,
+        )
 
         key = resolve_api_key(settings)
         lines.append(f"api_key: {'set' if key else 'missing'}")
-        lines.append(f"model: {resolve_model_id(settings)}")
+        lines.append(f"primary_model: {resolve_model_id(settings)}")
+        lines.append(f"secondary_model: {secondary_model_name(settings)}")
+        lines.append(f"auxiliary_model: {auxiliary_model_name(settings)}")
+        lines.append(f"fallback_model: {settings.provider.fallback_model or '(none)'}")
         base = resolve_base_url(settings)
         lines.append(f"base_url: {base or '(default openai)'}")
         lines.append(f"telegram_token: {'set' if settings.telegram.token else 'missing'}")
