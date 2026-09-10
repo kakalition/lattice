@@ -1,6 +1,6 @@
 # Lattice
 
-Thin-waist personal agent platform (Hermes-inspired): Pydantic AI loop, named profiles, HITL, full context compressor, multi-SQLite, rich TUI + Telegram, MCP bridge, mem0/Chroma.
+Thin-waist personal agent platform (Hermes-inspired): Pydantic AI loop, named profiles, HITL, full context compressor, multi-SQLite, rich TUI + Telegram, MCP bridge, mem0/Qdrant.
 
 See [docs/PLAN.md](docs/PLAN.md) for the full product plan.
 
@@ -8,7 +8,7 @@ See [docs/PLAN.md](docs/PLAN.md) for the full product plan.
 
 ```bash
 uv sync --extra dev
-# Project .env (also supported: ~/.lattice/.env)
+# Project .env (also supported: .lattice/.env)
 # OPENROUTER_API_KEY=...
 # OPENROUTER_MODEL=...
 # TELEGRAM_TOKEN=...
@@ -23,7 +23,7 @@ uv run lattice chat --tui -p finance
 Gateway (Telegram + scheduler):
 
 ```bash
-# set telegram.token in ~/.lattice/config.yaml and allowlist
+# set TELEGRAM_TOKEN / TELEGRAM_CHAT_ID in .env (or .lattice/config.yaml)
 uv run lattice gateway
 ```
 
@@ -31,7 +31,7 @@ uv run lattice gateway
 
 - Waist: `src/lattice/{turn,agent_app,prompt,session,config,events,cli}.py`
 - Domains: `channel/`, `hitl/`, `context/`, `tools/`, `mcp/`, `skills/`, `profiles/`, `memory/`, `sqlite/`, `providers/`, `scheduler/`
-- User data: `~/.lattice/`
+- User data: `<project>/.lattice/` (override with `LATTICE_HOME`)
 
 ## Dev
 

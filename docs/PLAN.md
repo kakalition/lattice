@@ -1,6 +1,6 @@
 ---
 name: Lattice Python Agent
-overview: Thin-waist personal agent with named profiles, multi-SQLite, rich TUI + Telegram-native UX, Pydantic AI + MCP + mem0/Chroma; selective skills/MCP; Hermes reliability hardening in v1; no Lang stack, no subagents.
+overview: Thin-waist personal agent with named profiles, multi-SQLite, rich TUI + Telegram-native UX, Pydantic AI + MCP + mem0/Qdrant; selective skills/MCP; Hermes reliability hardening in v1; no Lang stack, no subagents.
 status: parked — execute when ready (do not start implementation until explicitly asked)
 source: synced from ~/.cursor/plans/lattice_go_agent_04117ff3.plan.md on 2026-09-10
 todos:
@@ -14,7 +14,7 @@ todos:
     content: context/ full compressor + aux model; memory flush; protect_last_n; lineage
     status: pending
   - id: memory
-    content: memory/ mem0+Chroma scoped per profile; forget; prefetch/sync
+    content: memory/ mem0+Qdrant (local path, BM25) scoped per profile; forget; prefetch/sync
     status: pending
   - id: sqlite
     content: sqlite/ multi-DB registry (global + per-profile) + tools + skill
@@ -121,7 +121,7 @@ Waist modules: `turn.py`, `agent_app.py`, `prompt.py`, `session.py`, `config.py`
 | `tools/` | Builtin tools (shell, files, web, clarify, todo, session_search) | New file under `tools/` |
 | `mcp/` | MCP host config, server lifecycle, tool bridge | New server entry in config |
 | `skills/` | agentskills.io loader + slash activation | New `SKILL.md` pack |
-| `memory/` | `Memory` port + mem0/Chroma impl + memory tools wiring | New backend behind port |
+| `memory/` | `Memory` port + mem0/Qdrant impl + memory tools wiring | New backend behind port |
 | `sqlite/` | Named multi-DB registry + SQL tools (separate from `session` state.db) | Register another DB path |
 | `profiles/` | Named agent personas — prompt, skills, tools, memory/session scope | New profile directory |
 | `providers/` | OpenAI-compat client/settings | New provider profile in config |
@@ -158,7 +158,7 @@ Waist modules: `turn.py`, `agent_app.py`, `prompt.py`, `session.py`, `config.py`
 | Config | **pydantic-settings** |
 | `mcp/` | official **mcp** + Pydantic AI MCP |
 | `providers/` | OpenAI-compat via Pydantic AI |
-| `memory/` | **mem0ai** + **chromadb** |
+| `memory/` | **mem0ai** + **qdrant-client** (+ **fastembed** BM25) |
 | `channel/cli` | **typer** + **rich** + **Textual** |
 | `channel/telegram` | **python-telegram-bot** v21+ — commands menu, inline/reply keyboards, editMessage, media, callback_query |
 | `tools/` web | **httpx** (+ **Tavily** for `web_search`) |
@@ -184,7 +184,7 @@ Waist modules: `turn.py`, `agent_app.py`, `prompt.py`, `session.py`, `config.py`
 | HITL | approve + clarify; Telegram inline keyboards + TUI modals; timeout |
 | Context | **Full compressor** (aux LLM summarize) + trim fallback |
 | Sessions | SQLite + compress lineage (parent/child session ids) |
-| Memory | mem0 + Chroma; flush before compress |
+| Memory | mem0 + local Qdrant (hybrid BM25); flush before compress |
 | SQLite manager | Several **named** user DBs under `sqlite/` (not the session DB) |
 | Skills | agentskills.io loader + starters incl. **sqlite-admin**; **index in prompt**, body via `skill_view` |
 | Profiles | Named (e.g. `default`, `finance`) — prompt + skills + tools + isolated memory/sessions |
@@ -350,7 +350,7 @@ A **profile** is a named agent configuration. Same waist (`run_turn`); different
 | User notes | `profiles/finance/USER.md` (optional) |
 | Preferred skills | `skills: [sqlite-admin, web-research]` (+ optional profile-local `skills/` overlay) |
 | Tool policy | `tools.allow: [sqlite_*, web_*, read_file, clarify, todo, …]` / deny `shell` or gate harder |
-| Memory | mem0 `user_id` / Chroma collection `lattice-finance` (isolated from `default`) |
+| Memory | mem0 `user_id` / Qdrant collection `lattice-finance` (isolated from `default`) |
 | Sessions | `session_key` includes `profile:` — finance chats don’t mix with default |
 | SQLite | Profile can expose a subset: `sqlite.databases: { ledger: … }` or inherit global registry + `sqlite.allow: [ledger]` |
 | Model (optional) | Override `model` / `auxiliary_model` per profile |
@@ -372,7 +372,7 @@ A **profile** is a named agent configuration. Same waist (`run_turn`); different
       USER.md
       skills/                  # optional extras only for this profile
   state.db                    # sessions table has profile_id column
-  chroma/                     # collections per profile (or subdirs)
+  qdrant/                     # local Qdrant path; collections per profile
   sqlite/
 ```
 
@@ -507,7 +507,7 @@ src/lattice/
     store.py             # list profiles; sticky telegram→profile map
   memory/
     base.py
-    mem0_chroma.py
+    mem0_qdrant.py
     tools.py
   sqlite/
     registry.py
@@ -535,7 +535,7 @@ User data stays domain-mirrored under home:
     default/
     finance/
   skills/               # global starters
-  chroma/
+  qdrant/
   scheduler/
   sqlite/
     backups/
@@ -641,10 +641,11 @@ async def compress(messages, *, aux: AuxiliaryClient, protect_last_n: int) -> Co
 ```python
 Memory.from_config({
   "vector_store": {
-    "provider": "chroma",
+    "provider": "qdrant",
     "config": {
-      "path": str(Path.home() / ".lattice" / "chroma"),
+      "path": str(Path.home() / ".lattice" / "qdrant"),
       "collection_name": "lattice",
+      "on_disk": True,
     },
   },
 })

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 
 from rich.console import Console
@@ -11,6 +12,8 @@ from rich.markdown import Markdown
 from lattice.hitl.cli_adapter import CliHitlAdapter
 from lattice.models import Inbound, Outbound
 from lattice.session import SessionStore
+
+logger = logging.getLogger("lattice.channel.cli")
 
 
 class CliAdapter:
@@ -94,10 +97,13 @@ class CliAdapter:
                     steer_text=self._steer,
                 )
                 self._steer = None
+                logger.info("recv profile=%s text=%s", self.profile_id, line[:200])
                 outbound = await handler(inbound)
+                logger.info("send chars=%d", len(outbound.text or ""))
                 await self.send(outbound)
                 while not self._queue.empty():
                     nxt = await self._queue.get()
+                    logger.info("recv profile=%s text=%s", self.profile_id, nxt[:200])
                     outbound = await handler(
                         Inbound(
                             text=nxt,
@@ -107,6 +113,7 @@ class CliAdapter:
                             session_id=self.session_id,
                         )
                     )
+                    logger.info("send chars=%d", len(outbound.text or ""))
                     await self.send(outbound)
             finally:
                 self._busy = False

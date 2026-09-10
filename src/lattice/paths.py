@@ -1,12 +1,26 @@
-"""Paths and home directory helpers for ~/.lattice."""
+"""Paths and home directory helpers for <project>/.lattice."""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
+def project_root() -> Path:
+    """Repo root (directory with pyproject.toml), else cwd."""
+    here = Path(__file__).resolve()
+    for parent in (here.parent, *here.parents):
+        if (parent / "pyproject.toml").is_file():
+            return parent
+    return Path.cwd()
+
+
 def lattice_home() -> Path:
-    return Path.home() / ".lattice"
+    """User data root: $LATTICE_HOME or <project>/.lattice."""
+    env = os.environ.get("LATTICE_HOME")
+    if env:
+        return Path(env).expanduser().resolve()
+    return project_root() / ".lattice"
 
 
 def ensure_home() -> Path:
@@ -14,9 +28,11 @@ def ensure_home() -> Path:
     for sub in (
         "profiles/default",
         "skills",
-        "chroma",
+        "qdrant",
         "scheduler",
         "sqlite/backups",
+        "workspace",
+        "logs",
     ):
         (home / sub).mkdir(parents=True, exist_ok=True)
     return home

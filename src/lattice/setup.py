@@ -168,6 +168,7 @@ skills:
   disable: [safe-shell]
 tools:
   allow: [sqlite_*, web_*, read_file, search_files, clarify, todo,
+          schedule_add, schedule_list, schedule_cancel,
           session_search, memory_*, skills_list, skill_view,
           tool_search, tool_describe, tool_invoke]
   deny: [shell, write_file, edit_file]
@@ -197,7 +198,7 @@ def init_home(home: Path | None = None) -> Path:
         for sub in (
             "profiles/default",
             "skills",
-            "chroma",
+            "qdrant",
             "scheduler",
             "sqlite/backups",
             "workspace",
@@ -246,6 +247,10 @@ def doctor_report(home: Path | None = None) -> list[str]:
             sorted(p.name for p in skills.iterdir() if p.is_dir()) if skills.is_dir() else []
         )
         lines.append(f"skills: {', '.join(skill_names) or '(none)'}")
+        from lattice.logging_config import log_dir
+
+        log_file = log_dir() / "lattice.log"
+        lines.append(f"log: {log_file} ({'yes' if log_file.exists() else 'pending'})")
     else:
         lines.append("run `lattice init` first")
     return lines

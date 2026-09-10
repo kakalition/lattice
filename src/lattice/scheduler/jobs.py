@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from lattice.models import Inbound
+from lattice.models import Inbound, Outbound
 from lattice.paths import lattice_home
+
+logger = logging.getLogger("lattice.scheduler")
 
 
 @dataclass
@@ -23,6 +27,8 @@ class Job:
     enabled: bool = True
     timezone: str = "UTC"
     last_run: str | None = None
+    run_at: str | None = None  # absolute ISO one-shot; preferred over cron when set
+    message: str | None = None  # if set, deliver directly (skip LLM turn)
 
 
 def jobs_path(home: Path | None = None) -> Path:
@@ -55,6 +61,8 @@ def save_jobs(jobs: list[Job], home: Path | None = None) -> None:
                 "enabled": j.enabled,
                 "timezone": j.timezone,
                 "last_run": j.last_run,
+                "run_at": j.run_at,
+                "message": j.message,
             }
             for j in jobs
         ]
@@ -78,6 +86,31 @@ def _parse_last_run(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _parse_run_at(value: str | None, *, timezone: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        try:
+            dt = dt.replace(tzinfo=ZoneInfo(timezone))
+        except ZoneInfoNotFoundError:
+            dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def job_local_now(job: Job, now: datetime | None = None) -> datetime:
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    try:
+        return now.astimezone(ZoneInfo(job.timezone or "UTC"))
+    except ZoneInfoNotFoundError:
+        return now.astimezone(UTC)
 
 
 def cron_field_matches(field: str, value: int) -> bool:
@@ -138,16 +171,26 @@ def cron_matches(expr: str, when: datetime) -> bool:
 def is_job_due(
     job: Job, now: datetime | None = None, *, min_interval: timedelta = timedelta(seconds=55)
 ) -> bool:
-    if not job.enabled or not job.schedule.strip():
+    if not job.enabled:
         return False
-    now = now or datetime.now(UTC)
+    now_utc = now or datetime.now(UTC)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=UTC)
     last = _parse_last_run(job.last_run)
+
+    run_at = _parse_run_at(job.run_at, timezone=job.timezone)
+    if run_at is not None:
+        return last is None and now_utc >= run_at.astimezone(UTC)
+
+    if not job.schedule.strip():
+        return False
     sched = job.schedule.strip()
     if sched in {"@once", "once"}:
         return last is None
-    if last and now - last < min_interval:
+    if last and now_utc - last.astimezone(UTC) < min_interval:
         return False  # avoid double-fire within gateway tick window
-    return cron_matches(sched, now)
+    local = job_local_now(job, now_utc)
+    return cron_matches(sched, local)
 
 
 @dataclass
@@ -156,33 +199,47 @@ class SchedulerRunner:
 
     def due_jobs(self, now: datetime | None = None) -> list[Job]:
         now = now or datetime.now(UTC)
-        return [j for j in load_jobs(self.home) if is_job_due(j, now)]
+        due = [j for j in load_jobs(self.home) if is_job_due(j, now)]
+        if due:
+            logger.info("due jobs: %s", ", ".join(j.id for j in due))
+        return due
 
     def mark_run(self, job_id: str) -> None:
         jobs = load_jobs(self.home)
         for job in jobs:
             if job.id == job_id:
                 job.last_run = datetime.now(UTC).isoformat()
-                # @once jobs disable after first run
-                if job.schedule.strip() in {"@once", "once"}:
+                # one-shots disable after first run
+                if job.run_at or job.schedule.strip() in {"@once", "once"}:
                     job.enabled = False
         save_jobs(jobs, self.home)
 
     async def run_once(self, run_turn_fn: Any, send_fn: Any | None = None) -> list[str]:
         results: list[str] = []
         for job in self.due_jobs():
-            inbound = job_to_inbound(job)
+            logger.info(
+                "running job id=%s deliver=%s run_at=%s schedule=%s",
+                job.id,
+                job.deliver,
+                job.run_at,
+                job.schedule,
+            )
             try:
-                outbound = await run_turn_fn(inbound)
+                if job.message:
+                    outbound = Outbound(text=job.message, profile_id=job.profile)
+                else:
+                    outbound = await run_turn_fn(job_to_inbound(job))
                 results.append(outbound.text)
                 if send_fn and job.deliver != "none":
                     await send_fn(job.deliver, outbound)
+                    logger.info("delivered job %s via %s", job.id, job.deliver)
+                elif job.deliver != "none" and not send_fn:
+                    logger.error("job %s deliver=%s but no send_fn bound", job.id, job.deliver)
             except Exception as exc:
                 msg = f"scheduler job {job.id} failed: {exc}"
+                logger.exception(msg)
                 results.append(msg)
                 if send_fn and job.deliver != "none":
-                    from lattice.models import Outbound
-
                     await send_fn(job.deliver, Outbound(text=msg))
             self.mark_run(job.id)
         return results

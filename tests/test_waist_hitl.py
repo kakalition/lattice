@@ -230,3 +230,28 @@ async def test_telegram_hitl_timeout() -> None:
     adapter = TelegramHitlAdapter(timeout_seconds=0)
     decision = await adapter.approve(ApprovalRequest(tool_name="shell", summary="x"))
     assert decision == ApprovalDecision.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_telegram_clarify_free_text_while_busy() -> None:
+    from lattice.hitl.base import ClarifyRequest
+
+    adapter = TelegramHitlAdapter(timeout_seconds=2)
+    sent: list[str] = []
+
+    async def send_fn(*, text: str, buttons: list | None = None) -> None:
+        sent.append(text)
+
+    adapter.bind_send(send_fn)
+    adapter.set_active_user("42")
+    task = asyncio.create_task(
+        adapter.clarify(ClarifyRequest(question="What timezone?", choices=[]))
+    )
+    for _ in range(50):
+        if adapter.awaiting_text("42"):
+            break
+        await asyncio.sleep(0.01)
+    assert adapter.awaiting_text("42")
+    assert adapter.resolve_text("42", "Asia/Bangkok")
+    assert await task == "Asia/Bangkok"
+    assert sent and "timezone" in sent[0].lower()

@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
+import signal
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 from lattice.channel.telegram.commands import COMMANDS
-from lattice.channel.telegram.formatting import chunk_text, escape_html
+from lattice.channel.telegram.formatting import chunk_text, markdown_to_telegram_html
 from lattice.channel.telegram.keyboards import inline_keyboard
 from lattice.config import LatticeSettings
 from lattice.hitl.telegram_adapter import TelegramHitlAdapter
 from lattice.models import Inbound, Outbound
 from lattice.profiles import list_profiles
 from lattice.session import SessionStore
+
+logger = logging.getLogger("lattice.channel.telegram")
 
 
 class TelegramBot:
@@ -81,7 +85,9 @@ class TelegramBot:
             context: ContextTypes.DEFAULT_TYPE,
         ) -> None:
             markup = inline_keyboard(buttons) if buttons else None
-            for i, chunk in enumerate(chunk_text(escape_html(text))):
+            html_chunks = chunk_text(markdown_to_telegram_html(text))
+            plain_chunks = chunk_text(text)
+            for i, chunk in enumerate(html_chunks):
                 kwargs: dict[str, Any] = {
                     "chat_id": chat_id,
                     "text": chunk,
@@ -95,8 +101,27 @@ class TelegramBot:
                         await context.bot.edit_message_text(message_id=edit_message_id, **kwargs)
                         continue
                     except Exception:
-                        pass
-                await context.bot.send_message(**kwargs)
+                        plain = {
+                            **kwargs,
+                            "text": plain_chunks[0],
+                            "parse_mode": None,
+                        }
+                        try:
+                            await context.bot.edit_message_text(
+                                message_id=edit_message_id, **plain
+                            )
+                            continue
+                        except Exception:
+                            pass
+                try:
+                    await context.bot.send_message(**kwargs)
+                except Exception:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=plain_chunks[min(i, len(plain_chunks) - 1)],
+                        disable_web_page_preview=True,
+                        reply_markup=kwargs.get("reply_markup"),
+                    )
 
         async def _send_for_hitl(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             async def _inner(*, text: str, buttons: list[dict[str, str]] | None = None) -> None:
@@ -202,6 +227,12 @@ class TelegramBot:
 
             uid = user.id
             if uid in self._busy:
+                # Free-text HITL clarify (e.g. timezone) must resolve the waiting turn,
+                # not start a queued turn that never runs.
+                if self.hitl.resolve_text(str(uid), text):
+                    with contextlib.suppress(Exception):
+                        await update.message.reply_text("ok")
+                    return
                 q = self._queues.setdefault(uid, asyncio.Queue(maxsize=self.settings.queue_depth))
                 try:
                     q.put_nowait(text)
@@ -210,10 +241,7 @@ class TelegramBot:
                     await update.message.reply_text("queue full")
                 return
 
-            self._busy.add(uid)
-            cancel = self._cancel.setdefault(uid, asyncio.Event())
-            cancel.clear()
-            try:
+            async def _run_turn(turn_text: str, paths: list[Path]) -> None:
                 await context.bot.send_chat_action(
                     chat_id=update.effective_chat.id, action="typing"
                 )
@@ -221,17 +249,28 @@ class TelegramBot:
                     await update.message.set_reaction("👀")
                 status = await update.message.reply_text("thinking…")
                 sticky = await self.store.get_sticky_profile("telegram", str(uid)) or "default"
+                self.hitl.set_active_user(str(uid))
                 self.hitl.bind_send(await _send_for_hitl(context, update.effective_chat.id))
-                outbound = await self.handler(
-                    Inbound(
-                        text=text,
-                        profile_id=sticky,
-                        user_id=str(uid),
-                        channel="telegram",
-                        session_id=self._sessions.get(uid),
-                        media_paths=media_paths,
-                    )
+                logger.info(
+                    "recv user=%s profile=%s text=%s",
+                    uid,
+                    sticky,
+                    (turn_text[:200] + "…") if len(turn_text) > 200 else turn_text,
                 )
+                try:
+                    outbound = await self.handler(
+                        Inbound(
+                            text=turn_text,
+                            profile_id=sticky,
+                            user_id=str(uid),
+                            channel="telegram",
+                            session_id=self._sessions.get(uid),
+                            media_paths=paths,
+                        )
+                    )
+                finally:
+                    self.hitl.set_active_user(None)
+                logger.info("send user=%s chars=%d", uid, len(outbound.text or ""))
                 if outbound.session_id:
                     self._sessions[uid] = outbound.session_id
                 await send_html(
@@ -248,6 +287,15 @@ class TelegramBot:
                         await context.bot.send_document(
                             chat_id=update.effective_chat.id, document=str(mp)
                         )
+
+            self._busy.add(uid)
+            try:
+                await _run_turn(text, media_paths)
+                # Drain queued follow-ups as fresh turns.
+                q = self._queues.get(uid)
+                while q is not None and not q.empty():
+                    nxt = q.get_nowait()
+                    await _run_turn(nxt, [])
             finally:
                 self._busy.discard(uid)
 
@@ -263,4 +311,31 @@ class TelegramBot:
         app.add_handler(CallbackQueryHandler(on_callback))
         app.add_handler(MessageHandler(filters.ChatType.PRIVATE & ~filters.COMMAND, on_message))
 
-        await app.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Application.run_polling() owns its own event loop and cannot nest under
+        # asyncio.run() used by the Lattice CLI. Use the async lifecycle instead.
+        await app.initialize()
+        if app.post_init:
+            await app.post_init(app)
+        await app.start()
+        assert app.updater is not None
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _request_stop(*_args: object) -> None:
+            loop.call_soon_threadsafe(stop.set)
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+            except (NotImplementedError, RuntimeError):
+                signal.signal(sig, _request_stop)
+        try:
+            await stop.wait()
+        finally:
+            with contextlib.suppress(Exception):
+                await app.updater.stop()
+            with contextlib.suppress(Exception):
+                await app.stop()
+            with contextlib.suppress(Exception):
+                await app.shutdown()

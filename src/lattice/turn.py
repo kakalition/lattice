@@ -31,6 +31,7 @@ from lattice.session import SessionStore, sanitize_messages
 from lattice.skills import scan_skills, skill_index_entries
 from lattice.sqlite import SqlitePool, SqliteRegistry
 from lattice.tools.deadline import with_deadline
+from lattice.turn_trace import LoggingTurnEvents, new_turn_id
 
 
 class TurnCancelled(Exception):
@@ -49,7 +50,9 @@ async def run_turn(
     model: Any | None = None,
 ) -> Outbound:
     settings = settings or load_settings()
-    events = events or NullTurnEvents()
+    turn_id = new_turn_id()
+    trace = LoggingTurnEvents(turn_id, inner=events or NullTurnEvents())
+    events = trace
     hitl = hitl or AutoApproveHitl(approve_all=False)
     store = session_store or SessionStore(settings.home / "state.db")
     mcp = mcp or McpHostManager()
@@ -108,7 +111,6 @@ async def run_turn(
         )
         if result.compressed:
             notices.append("Context was compressed; older turns summarized.")
-            # lineage: create child session
             parent_id = session_id
             session_id = await store.create(
                 profile_id=profile.id,
@@ -124,6 +126,23 @@ async def run_turn(
     registry = SqliteRegistry(settings)
     pool = SqlitePool(registry)
     enabled = resolve_enabled_tools(settings, profile, channel=inbound.channel, mcp=mcp)
+
+    user_content = inbound.text
+    if inbound.steer_text:
+        user_content = f"{user_content}\n\n[steer] {inbound.steer_text}"
+    if inbound.media_paths:
+        paths = ", ".join(str(p) for p in inbound.media_paths)
+        user_content = f"{user_content}\n\n[media] {paths}"
+
+    trace.log_begin(
+        channel=inbound.channel,
+        user_id=inbound.user_id,
+        profile_id=profile.id,
+        session_id=session_id,
+        inbound_text=user_content,
+        tools=enabled,
+        skills=entries,
+    )
 
     deps = TurnDeps(
         settings=settings,
@@ -144,14 +163,6 @@ async def run_turn(
         cooldown=FallbackCooldown(),
     )
 
-    user_content = inbound.text
-    if inbound.steer_text:
-        user_content = f"{user_content}\n\n[steer] {inbound.steer_text}"
-    if inbound.media_paths:
-        paths = ", ".join(str(p) for p in inbound.media_paths)
-        user_content = f"{user_content}\n\n[media] {paths}"
-
-    # Persist user message before model call (persist-before-execute pattern for turns)
     messages.append({"role": "user", "content": user_content})
     await store.save_messages(session_id, messages)
 
@@ -177,60 +188,67 @@ async def run_turn(
     text = ""
     usage: dict[str, Any] = {}
     retries = 0
-    while True:
-        if cancel_event and cancel_event.is_set():
-            raise TurnCancelled("cancelled")
-        try:
-            text = await with_deadline(_run_once(), seconds=deadline, label="turn")
-            if not text.strip():
-                raise RuntimeError("empty completion")
-            break
-        except TurnCancelled:
-            raise
-        except Exception as exc:
-            reason = classify_provider_error(exc)
-            action = recovery_action(reason)
-            await events.on_status(f"provider {reason.value} → {action}")
-            if action == "retry" and retries < 2:
-                retries += 1
-                continue
-            if action == "compress":
-                await memory.sync_turn(messages)
-                aux = AuxiliaryClient(settings, profile.auxiliary_model)
-                result = await compress(
-                    messages,
-                    aux=aux,
-                    protect_last_n=settings.agent.protect_last_n,
-                    pressure=pressure,
-                )
-                messages = result.messages
-                await store.save_messages(session_id, messages)
-                retries += 1
-                if retries < 3:
-                    continue
-            if action == "fallback" and settings.provider.fallback_model:
-                deps.cooldown.mark_fallback()
-                try:
-                    text = await with_deadline(
-                        _run_once(settings.provider.fallback_model),
-                        seconds=deadline,
-                        label="fallback turn",
-                    )
-                    break
-                except Exception:
-                    text = f"I hit a provider error: {exc}"
-                    break
-            if action == "abort" or retries >= 3:
-                text = f"I hit a provider error: {exc}"
+    err: str | None = None
+    try:
+        while True:
+            if cancel_event and cancel_event.is_set():
+                raise TurnCancelled("cancelled")
+            try:
+                text = await with_deadline(_run_once(), seconds=deadline, label="turn")
+                if not text.strip():
+                    raise RuntimeError("empty completion")
                 break
-            text = f"I hit a provider error: {exc}"
-            break
-
-    messages.append({"role": "assistant", "content": text})
-    usage = {"model": profile.model or settings.agent.model}
-    await store.save_messages(session_id, messages, usage=usage)
-    await memory.sync_turn(messages[-4:])
-    await pool.close_all()
+            except TurnCancelled:
+                raise
+            except Exception as exc:
+                reason = classify_provider_error(exc)
+                action = recovery_action(reason)
+                await events.on_status(f"provider {reason.value} → {action}")
+                if action == "retry" and retries < 2:
+                    retries += 1
+                    continue
+                if action == "compress":
+                    await memory.sync_turn(messages)
+                    aux = AuxiliaryClient(settings, profile.auxiliary_model)
+                    result = await compress(
+                        messages,
+                        aux=aux,
+                        protect_last_n=settings.agent.protect_last_n,
+                        pressure=pressure,
+                    )
+                    messages = result.messages
+                    await store.save_messages(session_id, messages)
+                    retries += 1
+                    if retries < 3:
+                        continue
+                if action == "fallback" and settings.provider.fallback_model:
+                    deps.cooldown.mark_fallback()
+                    try:
+                        text = await with_deadline(
+                            _run_once(settings.provider.fallback_model),
+                            seconds=deadline,
+                            label="fallback turn",
+                        )
+                        break
+                    except Exception:
+                        text = f"I hit a provider error: {exc}"
+                        err = str(exc)
+                        break
+                if action == "abort" or retries >= 3:
+                    text = f"I hit a provider error: {exc}"
+                    err = str(exc)
+                    break
+                text = f"I hit a provider error: {exc}"
+                err = str(exc)
+                break
+    finally:
+        if text:
+            messages.append({"role": "assistant", "content": text})
+            usage = {"model": profile.model or settings.agent.model}
+            await store.save_messages(session_id, messages, usage=usage)
+            await memory.sync_turn(messages[-4:])
+        await pool.close_all()
+        trace.log_end(outbound_text=text or "", error=err)
 
     await events.on_stream_delta(text)
     return Outbound(text=text, session_id=session_id, profile_id=profile.id)

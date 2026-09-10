@@ -7,6 +7,7 @@ from lattice.scheduler.jobs import (
     load_jobs,
     save_jobs,
 )
+from lattice.scheduler.tools import schedule_add, schedule_cancel, schedule_list
 
 __all__ = [
     "Job",
@@ -16,4 +17,7 @@ __all__ = [
     "job_to_inbound",
     "load_jobs",
     "save_jobs",
+    "schedule_add",
+    "schedule_cancel",
+    "schedule_list",
 ]

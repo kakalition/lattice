@@ -1,3 +1,5 @@
+logs/
+.lattice/
 references/
 graphify-out/
 __pycache__/

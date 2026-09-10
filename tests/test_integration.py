@@ -58,3 +58,33 @@ async def test_live_tavily_search() -> None:
     text = await web_search("Python asyncio", api_key=settings.tavily_api_key, max_results=2)
     assert "untrusted" in text
     assert "http" in text.lower()
+
+
+def _has_telegram() -> bool:
+    load_settings()
+    return bool(os.environ.get("TELEGRAM_TOKEN") or os.environ.get("LATTICE_TELEGRAM__TOKEN"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _has_telegram(), reason="no Telegram token")
+async def test_live_telegram_polling_lifecycle() -> None:
+    """Start/stop PTB updater inside a running event loop (the gateway bug class)."""
+    import asyncio
+
+    from telegram import Update
+    from telegram.ext import Application
+
+    settings = load_settings()
+    token = settings.telegram.token
+    assert token
+    app = Application.builder().token(token).build()
+    await app.initialize()
+    await app.start()
+    assert app.updater is not None
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    me = await app.bot.get_me()
+    assert me.username
+    await asyncio.sleep(0.5)
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()

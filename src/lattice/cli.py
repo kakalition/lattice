@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import typer
@@ -11,12 +12,14 @@ from rich.console import Console
 from lattice import __version__
 from lattice.config import load_settings
 from lattice.hitl import AutoApproveHitl, CliHitlAdapter
+from lattice.logging_config import setup_logging
 from lattice.providers.settings import resolve_api_key
 from lattice.setup import doctor_report, init_home
 from lattice.turn import echo_turn, run_turn
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Lattice personal agent")
 console = Console()
+logger = logging.getLogger("lattice.cli")
 
 
 def _run(coro):
@@ -36,10 +39,11 @@ def version() -> None:
 
 @app.command("init")
 def init_cmd(
-    home: Path | None = typer.Option(None, help="Override Lattice home (default ~/.lattice)"),
+    home: Path | None = typer.Option(None, help="Override Lattice home (default <project>/.lattice)"),
 ) -> None:
-    """Create ~/.lattice layout, default + finance profiles, skill starters."""
+    """Create <project>/.lattice layout, default + finance profiles, skill starters."""
     root = init_home(home)
+    setup_logging()
     console.print(f"initialized {root}")
 
 
@@ -48,6 +52,8 @@ def doctor(
     home: Path | None = typer.Option(None, help="Override Lattice home"),
 ) -> None:
     """Diagnose config / keys / profiles."""
+    settings = load_settings(home)
+    setup_logging()
     for line in doctor_report(home):
         console.print(line)
 
@@ -64,6 +70,7 @@ def chat(
     if workspace:
         settings.agent.workspace = workspace
     init_home(settings.home)
+    setup_logging()
 
     async def handler(inbound):
         inbound.profile_id = inbound.profile_id or profile
@@ -92,13 +99,16 @@ def gateway(
 ) -> None:
     """Run Telegram + scheduler gateway (pidfile locked)."""
     from lattice.channel.telegram.adapter import TelegramAdapter
+    from lattice.channel.telegram.deliver import deliver_telegram
     from lattice.gateway import PidfileLock
     from lattice.hitl import TelegramHitlAdapter
+    from lattice.models import Outbound
     from lattice.scheduler import SchedulerRunner
     from lattice.session import SessionStore
 
     settings = load_settings()
     init_home(settings.home)
+    log_path = setup_logging()
     lock = PidfileLock(settings.home / "gateway.pid")
     lock.acquire()
     store = SessionStore(settings.home / "state.db")
@@ -108,25 +118,44 @@ def gateway(
     async def handler(inbound):
         if not resolve_api_key(settings):
             return await echo_turn(inbound)
-        # scheduler channel denies interactive HITL by default
         local_hitl = hitl if inbound.channel == "telegram" else AutoApproveHitl(approve_all=False)
         return await run_turn(inbound, settings=settings, hitl=local_hitl, session_store=store)
 
+    async def send_fn(channel: str, outbound: Outbound) -> None:
+        if channel == "telegram":
+            await deliver_telegram(settings, outbound)
+        elif channel == "cli":
+            console.print(f"[cyan]scheduler[/] {outbound.text}")
+        else:
+            logger.warning("unknown deliver channel %s", channel)
+
     async def main_async() -> None:
         if once:
-            await runner.run_once(handler)
+            await runner.run_once(handler, send_fn=send_fn)
             return
         if not settings.telegram.token:
             console.print("telegram.token missing — running scheduler once only")
-            await runner.run_once(handler)
+            await runner.run_once(handler, send_fn=send_fn)
             return
         adapter = TelegramAdapter(settings, hitl=hitl, store=store)
+        console.print(
+            "[green]Lattice gateway[/] polling Telegram "
+            f"(allowlist={settings.telegram.allowlist or 'open'}) — Ctrl+C to stop"
+        )
+        console.print(f"[dim]logs → {log_path}[/]")
+        logger.info(
+            "gateway start allowlist=%s log=%s",
+            settings.telegram.allowlist,
+            log_path,
+        )
 
-        # concurrent scheduler tick every 60s
         async def sched_loop() -> None:
             while True:
-                await runner.run_once(handler)
-                await asyncio.sleep(60)
+                try:
+                    await runner.run_once(handler, send_fn=send_fn)
+                except Exception:
+                    logger.exception("scheduler tick failed")
+                await asyncio.sleep(30)
 
         sched_task = asyncio.create_task(sched_loop())
         try:
@@ -134,6 +163,7 @@ def gateway(
         finally:
             sched_task.cancel()
             lock.release()
+            logger.info("gateway stopped")
 
     try:
         _run(main_async())
