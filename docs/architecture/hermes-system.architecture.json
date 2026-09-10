@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Hermes Agent Architecture",
+    "quality_profile": "showcase",
+    "viewBox": [1200, 640],
+    "repository": {
+      "url": "https://github.com/NousResearch/hermes-agent",
+      "revision": "6e07eb48387044dbcaf12490931c2b8ca7ec8653"
+    },
+    "views": [
+      {
+        "id": "entry-to-harness",
+        "label": "Entry → harness",
+        "focus": ["entry", "aiagent", "provider", "tools"],
+        "note": "All surfaces converge on one AIAgent harness."
+      },
+      {
+        "id": "harness-core",
+        "label": "Harness internals",
+        "focus": ["aiagent", "prompt", "provider", "tools", "session"],
+        "note": "Prompt, provider, tools, and SQLite persistence."
+      },
+      {
+        "id": "backends",
+        "label": "Backends",
+        "focus": ["tools", "terminal", "llm", "mcp"],
+        "note": "Tools fan out to terminal, LLM APIs, and MCP/plugins."
+      }
+    ]
+  },
+  "components": [
+    { "id": "cron", "type": "messagebus", "label": "Cron", "sublabel": "fresh agent/job", "pos": [40, 80], "size": [140, 56], "sources": [{ "path": "cron/scheduler.py" }] },
+    { "id": "entry", "type": "frontend", "label": "Entry Points", "sublabel": "CLI · Gateway · ACP", "pos": [40, 240], "size": [140, 64], "sources": [{ "path": "cli.py" }, { "path": "gateway/run.py" }] },
+    { "id": "aiagent", "type": "backend", "label": "AIAgent Harness", "sublabel": "conversation_loop", "tag": "shared core", "pos": [250, 220], "size": [180, 80], "sources": [{ "path": "run_agent.py", "line": 211 }, { "path": "agent/conversation_loop.py" }] },
+    { "id": "prompt", "type": "backend", "label": "Prompt System", "sublabel": "stable→volatile", "pos": [500, 80], "size": [150, 56], "sources": [{ "path": "agent/prompt_builder.py" }] },
+    { "id": "provider", "type": "cloud", "label": "Provider Runtime", "sublabel": "3 API modes", "pos": [500, 230], "size": [150, 64], "sources": [{ "path": "hermes_cli/runtime_provider.py" }] },
+    { "id": "tools", "type": "messagebus", "label": "Tool Dispatch", "sublabel": "70+ tools", "pos": [500, 380], "size": [150, 64], "sources": [{ "path": "tools/registry.py" }, { "path": "model_tools.py" }] },
+    { "id": "session", "type": "database", "label": "Session Store", "sublabel": "SQLite + FTS5", "pos": [250, 400], "size": [150, 56], "sources": [{ "path": "hermes_state.py" }] },
+    { "id": "llm", "type": "external", "label": "LLM APIs", "sublabel": "OpenAI · Anthropic", "pos": [740, 210], "size": [160, 56] },
+    { "id": "terminal", "type": "cloud", "label": "Terminal / Browser", "sublabel": "7 + 5 backends", "pos": [740, 340], "size": [160, 56], "sources": [{ "path": "tools/terminal_tool.py" }] },
+    { "id": "mcp", "type": "external", "label": "MCP + Plugins", "sublabel": "dynamic tools", "pos": [740, 430], "size": [160, 56], "sources": [{ "path": "tools/mcp_tool.py" }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Hermes process", "wraps": ["entry", "aiagent", "prompt", "provider", "tools", "session", "cron"] },
+    { "kind": "security-group", "label": "Harness core", "wraps": ["aiagent", "prompt", "provider", "tools"] }
+  ],
+  "connections": [
+    { "id": "entry-harness", "from": "entry", "to": "aiagent", "label": "run", "variant": "emphasis", "labelAt": [215, 200] },
+    { "id": "cron-harness", "from": "cron", "to": "aiagent", "label": "job", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
+    { "id": "harness-prompt", "from": "aiagent", "to": "prompt", "label": "assemble", "fromSide": "top", "toSide": "left" },
+    { "id": "harness-provider", "from": "aiagent", "to": "provider", "label": "API", "variant": "emphasis" },
+    { "id": "harness-tools", "from": "aiagent", "to": "tools", "label": "tools", "fromSide": "bottom", "toSide": "left" },
+    { "id": "harness-session", "from": "aiagent", "to": "session", "label": "persist", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [220, 350] },
+    { "id": "provider-llm", "from": "provider", "to": "llm", "label": "modes", "labelDy": -20 },
+    { "id": "tools-terminal", "from": "tools", "to": "terminal", "fromSide": "right", "toSide": "left" },
+    { "id": "tools-mcp", "from": "tools", "to": "mcp", "variant": "dashed", "fromSide": "right", "toSide": "left" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "One harness", "items": ["All entry points share AIAgent"] },
+    { "dot": "rose", "title": "Created by extraction", "items": ["run_agent.py → agent/* mixins + turn phases"] }
+  ]
+}
