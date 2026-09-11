@@ -12,6 +12,8 @@ uv sync --extra dev
 # Models / timezone / tools → lattice.yaml
 uv run lattice init
 uv run lattice doctor
+# First chat/gateway auto-runs one-time setup (e.g. Playwright Chromium fallback).
+# Browser prefers system Chrome + .lattice/browser/profile; see browser: in lattice.yaml
 uv run lattice chat -p default
 uv run lattice chat --tui
 ```

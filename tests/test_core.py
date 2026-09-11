@@ -168,6 +168,7 @@ def test_init_and_skills(tmp_path: Path) -> None:
     assert "telegram-chat" in names
     assert "skill-authoring" in names
     assert "profile-authoring" in names
+    assert "daily-briefing" in names
     entries = skill_index_entries(
         skills, prefer=["telegram-chat", "sqlite-admin"], disable=["safe-shell"]
     )

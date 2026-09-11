@@ -187,6 +187,7 @@ Waist modules: `turn.py`, `agent_app.py`, `prompt.py`, `session.py`, `config.py`
 | Memory | mem0 + local Qdrant (hybrid BM25); flush before compress |
 | SQLite manager | Several **named** user DBs under `sqlite/` (not the session DB) |
 | Skills | agentskills.io loader + starters incl. **sqlite-admin**; **index in prompt**, body via `skill_view` |
+| One-time setup | `oneshot.py` registry + `.lattice/setup-once.json`; runs on `chat` / `gateway` (e.g. Playwright Chromium) |
 | Profiles | Named (e.g. `default`, `finance`) — prompt + skills + tools + isolated memory/sessions |
 | Subagents | **Skip v1** — no `delegate_task`; single-agent loop only |
 | Scheduler | jobs → Inbound; HITL deny/preapprove |
@@ -209,6 +210,8 @@ Waist modules: `turn.py`, `agent_app.py`, `prompt.py`, `session.py`, `config.py`
 | `search_files` | `search_files` | ripgrep if present, else walk |
 | `web_search` | `web_search` | **Tavily** backend |
 | `web_fetch` | `web_extract` | httpx + readable text extract |
+| `browser_interact` | `browser_*` | Prefer system Chrome + persistent `.lattice/browser/profile`; humanized click/type; `browser:` in lattice.yaml |
+| `browser_snapshot` | `browser_*` | Accessibility tree or text DOM of the live page |
 | `clarify` | `clarify` | Via `hitl/` |
 | `todo` | `todo` | In-session task list |
 | `session_search` | `session_search` | Search past sessions |
@@ -249,7 +252,7 @@ sqlite:
 
 ### Tools we are NOT porting from Hermes
 
-Browser stack (Playwright/CDP/Camofox/…), `code_execution` sandbox kernel, `computer_use`, platform bots (`discord_tool`, …), image/video gen, TTS/STT suites, `cronjob_*` as tools (use `scheduler/` domain), checkpoint manager, connect/credential passthrough zoo, home-assistant, etc.
+`code_execution` sandbox kernel, `computer_use`, platform bots (`discord_tool`, …), image/video gen, TTS/STT suites, `cronjob_*` as tools (use `scheduler/` domain), checkpoint manager, connect/credential passthrough zoo, home-assistant, etc. (Browser: Lattice ships a lean `browser_interact` / `browser_snapshot` Playwright pair — not the full Hermes browser stack.)
 
 ### Skills (v1)
 
@@ -257,7 +260,7 @@ Browser stack (Playwright/CDP/Camofox/…), `code_execution` sandbox kernel, `co
 |------|----------|
 | Format | [agentskills.io](https://agentskills.io) `SKILL.md` under `~/.lattice/skills/` |
 | Hermes skill trees | **Do not vendor** |
-| Bundled starters | `session-hygiene`, `safe-shell`, `web-research`, **`sqlite-admin`** |
+| Bundled starters | `session-hygiene`, `safe-shell`, `web-research`, **`sqlite-admin`**, `daily-briefing`, … |
 | `sqlite-admin` skill | When to list vs schema vs query; prefer `sqlite_query` before execute; always backup before migrations; explain HITL for writes; never touch `state.db` |
 
 Skills are prompt packs, not tools. SQLite **capability** = tools; SQLite **workflow** = `sqlite-admin` skill.
@@ -797,7 +800,7 @@ Steal **patterns**, not mixin sprawl. Owned by todo `hardening` / phase 11.
 
 ### Solid (no further debate)
 
-Thin waist + domains, Python/Pydantic AI, OpenAI-compat, CLI+Telegram, HITL domain, full compressor, multi-SQLite ≠ `state.db`, profiles (one gateway), no subagents v1, Telegram DM-only native UX, defer list (browser/OAuth/A2A/ACP/voice-first/…).
+Thin waist + domains, Python/Pydantic AI, OpenAI-compat, CLI+Telegram, HITL domain, full compressor, multi-SQLite ≠ `state.db`, profiles (one gateway), no subagents v1, Telegram DM-only native UX, defer list (OAuth/A2A/ACP/voice-first/…).
 
 ### Doc drift to fix when executing
 

@@ -15,6 +15,7 @@ from lattice.branding import brand_label
 from lattice.config import load_settings
 from lattice.hitl import AutoApproveHitl, CliHitlAdapter
 from lattice.logging_config import setup_logging
+from lattice.oneshot import ensure_oneshot_setup
 from lattice.paths import lattice_home
 from lattice.providers.settings import resolve_api_key
 from lattice.setup import doctor_report, init_home
@@ -55,7 +56,7 @@ def doctor(
     home: Path | None = typer.Option(None, help="Override Lattice home"),
 ) -> None:
     """Diagnose config / keys / profiles."""
-    settings = load_settings(home)
+    load_settings(home)
     setup_logging()
     for line in doctor_report(home):
         console.print(line)
@@ -127,6 +128,7 @@ def chat(
         settings.agent.workspace = workspace
     init_home(settings.home)
     setup_logging()
+    ensure_oneshot_setup(settings.home, console=console)
 
     async def handler(inbound):
         inbound.profile_id = inbound.profile_id or profile
@@ -168,6 +170,7 @@ def gateway(
 
     settings.timezone = ensure_timezone(settings.home)
     log_path = setup_logging()
+    ensure_oneshot_setup(settings.home, console=console)
     lock = PidfileLock(settings.home / "gateway.pid")
     lock.acquire()
     store = SessionStore(settings.home / "state.db")

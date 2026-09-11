@@ -21,6 +21,15 @@ tools:
   deny: []
   mcp_defer: auto
 
+browser:
+  channel: auto          # auto | chrome | chromium (auto prefers system Chrome)
+  headed: false          # true = visible window (stronger vs bot checks)
+  persistent_profile: true
+  profile_dir: null      # default: .lattice/browser/profile
+  humanize: true         # mouse move + delayed typing on click/type
+  type_delay_ms_min: 25
+  type_delay_ms_max: 75
+
 sqlite:
   databases: {}
   query_row_limit: 500

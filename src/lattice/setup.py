@@ -114,6 +114,38 @@ Run when the user asks for a weekly review / planning reset, or a scheduler job 
 - Mutating personal commitments without approval.
 """,
     ),
+    "daily-briefing": (
+        "Morning agenda from timezone, schedule, todo, and memory; mobile-friendly via telegram-chat.",
+        """---
+name: daily-briefing
+description: "Morning agenda from timezone, schedule, todo, and memory; mobile-friendly via telegram-chat."
+---
+# Daily briefing
+Use when the user asks for a morning briefing, daily agenda, "what's on today", or a scheduler
+job fires for a daily brief.
+
+## Procedure
+1. `timezone_get` — ground times in the user's zone.
+2. `schedule_list` — today's (and optional near-term) jobs/reminders.
+3. `todo` — list pending in-session tasks (do not invent a backlog).
+4. `memory_search` with queries like "today", "deadline", "follow up", open commitments.
+5. On Telegram, load `skill_view telegram-chat` (or rely on channel injection) before drafting.
+
+## Output shape
+1. **Today** — date + timezone
+2. **Agenda** — scheduled items with times
+3. **Tasks** — pending todos (short)
+4. **Notes** — 2–5 memory highlights that affect today
+5. **Focus** — one recommended next action
+
+Keep it scannable. No markdown tables. Prefer bullets and bold labels.
+
+## Pitfalls
+- Dumping raw tool JSON or long memory dumps.
+- Mutating schedule/todo/memory unless the user asks to reschedule or clear items.
+- Skipping timezone and mixing absolute times from another zone.
+""",
+    ),
     "office-xlsx": (
         "Create/read/edit Excel .xlsx and CSV via shell + openpyxl when available.",
         """---
@@ -229,7 +261,7 @@ Keep it short. Prefer progressive disclosure: index shows description; body load
 
 ## Don't
 - Write under the workspace copy unless the user insists; home `skills/` is canonical.
-- Invent Hermes-only tools (`browser_*`, `skill_manage`).
+- Invent tools Lattice does not have (check `skills_list` / core tool names).
 - Put secrets in skills.
 """,
     ),
@@ -318,6 +350,7 @@ def init_home(home: Path | None = None) -> Path:
             "scheduler",
             "sqlite/backups",
             "workspace",
+            "browser/profile",
         ):
             (root / sub).mkdir(parents=True, exist_ok=True)
     else:
@@ -403,6 +436,33 @@ def doctor_report(home: Path | None = None) -> list[str]:
         except ImportError:
             chart_status = "missing (uv add matplotlib)"
         lines.append(f"chart/matplotlib: {chart_status}")
+        try:
+            import playwright  # noqa: F401
+
+            from lattice.oneshot import oneshot_status, playwright_chromium_satisfied
+
+            bcfg = settings.browser
+            if playwright_chromium_satisfied():
+                browser_status = "ok"
+            else:
+                browser_status = "chromium pending (fallback; Chrome preferred if installed)"
+            lines.append(f"browser/playwright: {browser_status}")
+            lines.append(
+                f"browser/config: channel={bcfg.channel} headed={bcfg.headed} "
+                f"persistent={bcfg.persistent_profile} humanize={bcfg.humanize}"
+            )
+            from lattice.tools.browser import profile_dir_for
+
+            lines.append(f"browser/profile: {profile_dir_for(bcfg, root)}")
+            lines.extend(oneshot_status(root))
+        except ImportError:
+            lines.append("browser/playwright: missing (uv add playwright)")
+            try:
+                from lattice.oneshot import oneshot_status
+
+                lines.extend(oneshot_status(root))
+            except Exception as exc:
+                lines.append(f"oneshot: error ({exc})")
         from lattice.timeutil import resolve_timezone
 
         lines.append(f"timezone: {settings.timezone or resolve_timezone(root)}")

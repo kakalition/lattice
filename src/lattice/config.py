@@ -67,6 +67,25 @@ class ProviderConfig(BaseModel):
     fallback_model: str | None = None
 
 
+class BrowserChannel(StrEnum):
+    AUTO = "auto"  # prefer system Chrome, fall back to Chromium
+    CHROME = "chrome"
+    CHROMIUM = "chromium"
+
+
+class BrowserConfig(BaseModel):
+    """Playwright browser_interact / browser_snapshot settings."""
+
+    channel: BrowserChannel = BrowserChannel.AUTO
+    headed: bool = False
+    persistent_profile: bool = True
+    # Relative to Lattice home unless absolute; default .lattice/browser/profile
+    profile_dir: str | None = None
+    humanize: bool = True
+    type_delay_ms_min: int = 25
+    type_delay_ms_max: int = 75
+
+
 class LatticeSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="LATTICE_",
@@ -78,6 +97,7 @@ class LatticeSettings(BaseSettings):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    browser: BrowserConfig = Field(default_factory=BrowserConfig)
     sqlite: SqliteConfig = Field(default_factory=SqliteConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     tavily_api_key: str | None = None
@@ -239,6 +259,15 @@ tools:
   allow: ["*"]
   deny: []
   mcp_defer: auto
+
+browser:
+  channel: auto          # auto | chrome | chromium (auto prefers system Chrome)
+  headed: false          # true = visible window (stronger vs bot checks)
+  persistent_profile: true
+  profile_dir: null      # default: .lattice/browser/profile
+  humanize: true         # mouse move + delayed typing on click/type
+  type_delay_ms_min: 25
+  type_delay_ms_max: 75
 
 sqlite:
   databases: {}

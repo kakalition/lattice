@@ -31,6 +31,8 @@ CORE_TOOL_NAMES = [
     "generate_chart",
     "web_search",
     "web_fetch",
+    "browser_interact",
+    "browser_snapshot",
     "clarify",
     "todo",
     "delegate",

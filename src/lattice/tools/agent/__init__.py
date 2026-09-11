@@ -8,6 +8,8 @@ from lattice.deps import CORE_TOOL_NAMES
 from lattice.tools.agent._common import AgentT
 
 from . import (
+    browser_interact,
+    browser_snapshot,
     clarify,
     delegate,
     edit_file,
@@ -58,6 +60,8 @@ _MODULES = [
     generate_chart,
     web_search,
     web_fetch,
+    browser_interact,
+    browser_snapshot,
     clarify,
     todo,
     delegate,

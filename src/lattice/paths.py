@@ -48,6 +48,7 @@ def ensure_home() -> Path:
         "sqlite/backups",
         "workspace",
         "logs",
+        "browser/profile",
     ):
         (home / sub).mkdir(parents=True, exist_ok=True)
     return home
