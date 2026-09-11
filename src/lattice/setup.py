@@ -146,6 +146,157 @@ Keep it scannable. No markdown tables. Prefer bullets and bold labels.
 - Skipping timezone and mixing absolute times from another zone.
 """,
     ),
+    "task-decomposer": (
+        "Break a high-level goal into ordered todos with schedule_add checkpoints.",
+        """---
+name: task-decomposer
+description: "Break a high-level goal into ordered todos with schedule_add checkpoints."
+---
+# Task decomposer
+Use when the user asks to plan, break down, or organize a multi-step personal goal.
+
+## Procedure
+1. `clarify` goal, deadline, and constraints if missing.
+2. Draft 3–9 concrete next actions (verb-first, ≤1 sitting each).
+3. Write them with `todo` in dependency order; note blockers in the text.
+4. For time-bound milestones, `schedule_add` checkpoints (not every micro-task).
+5. Optionally `memory_add` the goal statement for later goal-alignment.
+
+## Output shape
+Goal → ordered checklist → scheduled checkpoints → first action to start now.
+
+## Pitfalls
+- Oversized tasks; inventing calendars without approval; skipping clarify on vague goals.
+""",
+    ),
+    "evening-reflection": (
+        "End-of-day review: todos, clarify wins/blockers, metric_log habits, memory_add lessons.",
+        """---
+name: evening-reflection
+description: "End-of-day review: todos, clarify wins/blockers, metric_log habits, memory_add lessons."
+---
+# Evening reflection
+Run at end of day or when the user asks to wrap up / journal.
+
+## Procedure
+1. `timezone_get` + `todo` — what finished vs open.
+2. `clarify` (or Telegram prompts): today's win, blocker, energy 1–5.
+3. `metric_log` habit/mood/focus points the user confirms (never invent completions).
+4. `memory_add` 1–3 durable lessons or commitments.
+5. Optionally `schedule_add` one carry-over reminder.
+
+## Output shape
+Wins → Blockers → Metrics logged → Memory notes → Tomorrow's first step.
+
+## Pitfalls
+- Logging habits the user did not confirm; long essays on Telegram.
+""",
+    ),
+    "habit-tracker": (
+        "Log habits with metric_log, streaks via metric_query, charts via generate_chart.",
+        """---
+name: habit-tracker
+description: "Log habits with metric_log, streaks via metric_query, charts via generate_chart."
+---
+# Habit tracker
+Use for daily habit check-ins, streak checks, or habit progress charts.
+
+## Procedure
+1. Confirm habit name (stable metric name, e.g. `habit.meditation`) and value (usually 1).
+2. `metric_log` the completion (optional note/tags).
+3. `metric_query` that name for streak/avg and recent by_day rows.
+4. On request, `generate_chart` from the by_day series; keep files under workspace.
+5. Flag drop-offs (gaps ≥2 days) and propose a tiny recovery action — do not nag.
+
+## Pitfalls
+- Renaming metrics casually (breaks streaks); charting without querying first.
+""",
+    ),
+    "goal-alignment": (
+        "Audit stated goals vs todo/metric effort; update memory when priorities drift.",
+        """---
+name: goal-alignment
+description: "Audit stated goals vs todo/metric effort; update memory when priorities drift."
+---
+# Goal alignment
+Periodic priority audit (weekly/monthly or on request).
+
+## Procedure
+1. `memory_search` for active goals / priorities.
+2. Inspect `todo` and `metric_query` for where time/effort actually went.
+3. Name mismatches (stated vs observed) without judgment.
+4. Propose goal edits; on approval `memory_update` / `memory_add`.
+5. Optional: one `schedule_add` for the next alignment review.
+
+## Pitfalls
+- Silent goal deletes; treating in-session todos as life history.
+""",
+    ),
+    "monthly-report": (
+        "Month metrics + memory into generate_chart visuals and a generate_pdf report.",
+        """---
+name: monthly-report
+description: "Month metrics + memory into generate_chart visuals and a generate_pdf report."
+---
+# Monthly report
+Use for month-in-review documents.
+
+## Procedure
+1. Confirm month window (`timezone_get`).
+2. `metric_query` key metrics with since/until for the month.
+3. `memory_search` for themes; `session_search` if needed for major events.
+4. `generate_chart` for 1–3 trends; `generate_pdf` assembling narrative + chart paths.
+5. Keep paths under workspace; on Telegram summarize + attach when media is supported.
+
+## Pitfalls
+- Giant PDF pastes in chat; inventing metrics not in the DB.
+""",
+    ),
+    "script-authoring": (
+        "Write/test reusable scripts under scripts/ via write_file + execute_script.",
+        """---
+name: script-authoring
+description: "Write/test reusable scripts under scripts/ via write_file + execute_script."
+---
+# Script authoring
+Use when creating local automation (CSV cleaners, renamers, batch transforms).
+
+## Paths
+- Canonical: `scripts/<name>.py|.js|.sh` (Lattice home).
+- Prefer `execute_script` (bwrap sandbox) over raw `shell` for script runs.
+- HITL gates dangerous scripts (subprocess/rm/network/eval) — explain those clearly.
+- Safe transforms (parse CSV, print stats) should not need approval.
+
+## Procedure
+1. `clarify` language, inputs/outputs, and whether network is needed (default off).
+2. `write_file` the script under `scripts/`.
+3. `execute_script` with path=… ; iterate with `edit_file` on failure.
+4. Optionally `schedule_add` / `todo` a reminder to run it later.
+
+## Pitfalls
+- Putting secrets in scripts; requesting network without need; using soft sandbox for untrusted code when bwrap is available.
+""",
+    ),
+    "data-pipeline": (
+        "Local ETL: execute_script clean → sqlite_execute load → generate_chart summary.",
+        """---
+name: data-pipeline
+description: "Local ETL: execute_script clean → sqlite_execute load → generate_chart summary."
+---
+# Data pipeline
+Automate multi-step local data processing.
+
+## Procedure
+1. Inventory inputs (workspace files / registered sqlite DBs).
+2. `execute_script` to clean/transform (write intermediates under workspace).
+3. `sqlite_register` if needed; `sqlite_backup` before migrations; `sqlite_execute` to load.
+4. `sqlite_query` sanity checks; `generate_chart` for a short visual summary.
+5. HITL for destructive SQL and dangerous scripts — explain each step.
+
+## Pitfalls
+- Touching `state.db`; skipping backups; running unbounded scripts.
+""",
+    ),
     "office-xlsx": (
         "Create/read/edit Excel .xlsx and CSV via shell + openpyxl when available.",
         """---
@@ -351,6 +502,8 @@ def init_home(home: Path | None = None) -> Path:
             "sqlite/backups",
             "workspace",
             "browser/profile",
+            "metrics",
+            "scripts",
         ):
             (root / sub).mkdir(parents=True, exist_ok=True)
     else:
@@ -475,6 +628,16 @@ def doctor_report(home: Path | None = None) -> list[str]:
             sorted(p.name for p in skills.iterdir() if p.is_dir()) if skills.is_dir() else []
         )
         lines.append(f"skills: {', '.join(skill_names) or '(none)'}")
+        from lattice.tools.script import bwrap_available, scripts_dir
+
+        scfg = settings.scripts
+        lines.append(
+            f"scripts: bwrap={'yes' if bwrap_available() else 'no'} "
+            f"require_bwrap={scfg.require_bwrap} network={scfg.allow_network} "
+            f"langs={','.join(scfg.languages)} dir={scripts_dir(root)}"
+        )
+        metrics = root / "metrics" / "metrics.db"
+        lines.append(f"metrics.db: {'yes' if metrics.exists() else 'pending'}")
         from lattice.logging_config import log_dir
 
         log_file = log_dir() / "lattice.log"

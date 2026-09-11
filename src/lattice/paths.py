@@ -49,6 +49,8 @@ def ensure_home() -> Path:
         "workspace",
         "logs",
         "browser/profile",
+        "metrics",
+        "scripts",
     ):
         (home / sub).mkdir(parents=True, exist_ok=True)
     return home

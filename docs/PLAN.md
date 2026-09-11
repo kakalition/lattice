@@ -210,8 +210,9 @@ Waist modules: `turn.py`, `agent_app.py`, `prompt.py`, `session.py`, `config.py`
 | `search_files` | `search_files` | ripgrep if present, else walk |
 | `web_search` | `web_search` | **Tavily** backend |
 | `web_fetch` | `web_extract` | httpx + readable text extract |
-| `browser_interact` | `browser_*` | Prefer system Chrome + persistent `.lattice/browser/profile`; humanized click/type; `browser:` in lattice.yaml |
-| `browser_snapshot` | `browser_*` | Accessibility tree or text DOM of the live page |
+| `browser_interact` / `browser_snapshot` | Prefer Chrome + persistent profile; humanized input |
+| `metric_log` / `metric_query` | Personal time-series SQLite under `.lattice/metrics/` (streaks, averages) |
+| `execute_script` | Sandboxed python/node/bash via **bwrap** (soft fallback); HITL only when dangerous |
 | `clarify` | `clarify` | Via `hitl/` |
 | `todo` | `todo` | In-session task list |
 | `session_search` | `session_search` | Search past sessions |
@@ -260,7 +261,7 @@ sqlite:
 |------|----------|
 | Format | [agentskills.io](https://agentskills.io) `SKILL.md` under `~/.lattice/skills/` |
 | Hermes skill trees | **Do not vendor** |
-| Bundled starters | `session-hygiene`, `safe-shell`, `web-research`, **`sqlite-admin`**, `daily-briefing`, … |
+| Bundled starters | `session-hygiene`, `safe-shell`, `web-research`, `sqlite-admin`, `daily-briefing`, `habit-tracker`, `script-authoring`, … |
 | `sqlite-admin` skill | When to list vs schema vs query; prefer `sqlite_query` before execute; always backup before migrations; explain HITL for writes; never touch `state.db` |
 
 Skills are prompt packs, not tools. SQLite **capability** = tools; SQLite **workflow** = `sqlite-admin` skill.

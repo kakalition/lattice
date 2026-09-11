@@ -86,6 +86,17 @@ class BrowserConfig(BaseModel):
     type_delay_ms_max: int = 75
 
 
+class ScriptsConfig(BaseModel):
+    """execute_script sandbox settings (prefer bwrap)."""
+
+    languages: list[str] = Field(default_factory=lambda: ["python", "node", "bash"])
+    timeout_seconds: float = 60.0
+    max_timeout_seconds: float = 300.0
+    allow_network: bool = False
+    # When true, refuse to run without bubblewrap. Default false so macOS soft-sandbox works.
+    require_bwrap: bool = False
+
+
 class LatticeSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="LATTICE_",
@@ -98,6 +109,7 @@ class LatticeSettings(BaseSettings):
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
+    scripts: ScriptsConfig = Field(default_factory=ScriptsConfig)
     sqlite: SqliteConfig = Field(default_factory=SqliteConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     tavily_api_key: str | None = None
@@ -268,6 +280,13 @@ browser:
   humanize: true         # mouse move + delayed typing on click/type
   type_delay_ms_min: 25
   type_delay_ms_max: 75
+
+scripts:
+  languages: [python, node, bash]
+  timeout_seconds: 60
+  max_timeout_seconds: 300
+  allow_network: false
+  require_bwrap: false   # true = refuse without bubblewrap (recommended on Linux)
 
 sqlite:
   databases: {}
