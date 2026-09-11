@@ -10,10 +10,12 @@ import typer
 from rich.console import Console
 
 from lattice import __version__
+from lattice.backup import create_backup, default_backup_path, restore_backup
 from lattice.branding import brand_label
 from lattice.config import load_settings
 from lattice.hitl import AutoApproveHitl, CliHitlAdapter
 from lattice.logging_config import setup_logging
+from lattice.paths import lattice_home
 from lattice.providers.settings import resolve_api_key
 from lattice.setup import doctor_report, init_home
 from lattice.turn import echo_turn, run_turn
@@ -57,6 +59,59 @@ def doctor(
     setup_logging()
     for line in doctor_report(home):
         console.print(line)
+
+
+@app.command()
+def backup(
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Archive path (default ./<home-name>-<utc>.tar.gz)",
+    ),
+    home: Path | None = typer.Option(None, help="Override Lattice home"),
+    include_logs: bool = typer.Option(
+        False,
+        "--include-logs",
+        help="Include .lattice/logs (omitted by default)",
+    ),
+) -> None:
+    """Compile .lattice into a portable .tar.gz archive (backup)."""
+    root = home or lattice_home()
+    out = output or default_backup_path(root)
+    try:
+        result = create_backup(root, output=out, include_logs=include_logs)
+    except (FileNotFoundError, FileExistsError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"[green]compiled[/] {result.home} → {result.archive} "
+        f"({result.file_count} files, {result.bytes} bytes)"
+    )
+
+
+@app.command()
+def restore(
+    archive: Path = typer.Argument(..., help="Path to lattice-home-*.tar.gz"),
+    home: Path | None = typer.Option(None, help="Override Lattice home"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Displace existing home to <.lattice>.bak.<utc> if non-empty",
+    ),
+) -> None:
+    """Restore a compiled .lattice archive into the home directory."""
+    root = home or lattice_home()
+    try:
+        result = restore_backup(archive, root, force=force)
+    except (FileNotFoundError, FileExistsError, RuntimeError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from exc
+    msg = f"[green]restored[/] {result.archive} → {result.home} ({result.file_count} files)"
+    if result.displaced is not None:
+        msg += f"\n[dim]previous home moved to {result.displaced}[/]"
+    console.print(msg)
 
 
 @app.command()

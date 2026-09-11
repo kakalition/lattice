@@ -16,6 +16,15 @@ uv run lattice chat -p default
 uv run lattice chat --tui
 ```
 
+Backup / restore runtime home (``.lattice`` → portable archive):
+
+```bash
+uv run lattice backup                 # → ./.lattice-<utc>.tar.gz
+uv run lattice backup -o ~/lattice.tgz
+uv run lattice restore ~/lattice.tgz  # empty home only
+uv run lattice restore ~/lattice.tgz --force  # displaces existing home to .lattice.bak.<utc>
+```
+
 Gateway (Telegram + scheduler):
 
 ```bash
