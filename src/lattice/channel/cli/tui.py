@@ -9,6 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, RichLog, Static
 
+from lattice.branding import brand_label
 from lattice.channel.live_status import LiveTurnEvents, bind_live_events, idle_phrase
 from lattice.hitl.base import ApprovalDecision, ApprovalRequest, ClarifyRequest
 from lattice.models import Inbound, Outbound
@@ -90,13 +91,13 @@ class LatticeTui(App[None]):
         yield Header()
         yield RichLog(id="log", markup=True)
         yield Static(f"profile={self.profile_id}", id="status")
-        yield Input(placeholder="Message Lattice… (/profile, /quit)", id="input")
+        yield Input(placeholder=f"Message {brand_label(glyph=False)}… (/profile, /quit)", id="input")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#input", Input).focus()
         log = self.query_one("#log", RichLog)
-        log.write(f"[bold]Lattice TUI[/] profile={self.profile_id}")
+        log.write(f"[bold]{brand_label()} TUI[/] profile={self.profile_id}")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()

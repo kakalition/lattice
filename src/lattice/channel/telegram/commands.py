@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 COMMANDS = [
-    ("start", "Start Lattice"),
+    ("start", "Start ◇ Lattice"),
     ("help", "Help"),
     ("stop", "Cancel current turn / HITL"),
     ("sessions", "List recent sessions"),

@@ -8,8 +8,9 @@ import math
 from pathlib import Path
 from typing import Any
 
+from lattice.branding import logo_path
 from lattice.tools.file_safety import PathDeniedError, resolve_agent_path
-from lattice.tools.theme import ShadcnTheme, resolve_theme
+from lattice.tools.theme import ShadcnTheme, hex_to_rgb, resolve_theme
 
 _CHART_TYPES = frozenset({"bar", "line", "area", "pie", "donut"})
 
@@ -149,6 +150,20 @@ def _draw_chart(
     # Y labels need a left gutter; X labels need a small SM strip above card pad.
     y_label_gutter = _pt(fig_w, 22.0)
     x_label_gutter = _pt(fig_h, PT_SM)
+
+    # Brand mark — top-right inside card (tight, not competing with title).
+    try:
+        r, g, b = hex_to_rgb(theme.card)
+        use_dark_mark = (0.2126 * r + 0.7152 * g + 0.0722 * b) > 0.55
+        mark_img = plt.imread(str(logo_path(mark=True, dark=use_dark_mark)))
+        mark_w = _pt(fig_w, 12.0)
+        mark_h = mark_w * (fig_w / fig_h)
+        mark_ax = fig.add_axes([right - mark_w, top - mark_h, mark_w, mark_h])
+        mark_ax.imshow(mark_img)
+        mark_ax.axis("off")
+        mark_ax.set_zorder(5)
+    except Exception:
+        pass
 
     # Header group (proximity: SM between related lines).
     y = top

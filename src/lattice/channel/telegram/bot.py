@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from lattice.branding import brand_label, logo_path
 from lattice.channel.live_status import (
     LiveTurnEvents,
     bind_live_events,
@@ -147,7 +148,12 @@ class TelegramBot:
         async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not update.effective_user or not await _allowed(update.effective_user.id):
                 return
-            await update.message.reply_text("Lattice ready. Send a message or /profile.")
+            caption = f"{brand_label()} ready. Send a message or /profile."
+            try:
+                with open(logo_path(), "rb") as fh:
+                    await update.message.reply_photo(photo=fh, caption=caption)
+            except Exception:
+                await update.message.reply_text(caption)
 
         async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("Commands: " + ", ".join(f"/{c}" for c, _ in COMMANDS))

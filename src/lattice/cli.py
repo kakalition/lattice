@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 
 from lattice import __version__
+from lattice.branding import brand_label
 from lattice.config import load_settings
 from lattice.hitl import AutoApproveHitl, CliHitlAdapter
 from lattice.logging_config import setup_logging
@@ -142,7 +143,7 @@ def gateway(
             return
         adapter = TelegramAdapter(settings, hitl=hitl, store=store)
         console.print(
-            "[green]Lattice gateway[/] polling Telegram "
+            f"[green]{brand_label()} gateway[/] polling Telegram "
             f"(allowlist={settings.telegram.allowlist or 'open'}) — Ctrl+C to stop"
         )
         console.print(f"[dim]logs → {log_path}[/]")

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from rich.console import Console
 from rich.markdown import Markdown
 
+from lattice.branding import brand_label
 from lattice.channel.live_status import LiveTurnEvents, bind_live_events, idle_phrase
 from lattice.hitl.cli_adapter import CliHitlAdapter
 from lattice.models import Inbound, Outbound
@@ -86,7 +87,9 @@ class CliAdapter:
             sink.stop()
 
     async def run(self, handler: Callable[[Inbound], Awaitable[Outbound]]) -> None:
-        self.console.print(f"[bold]Lattice[/] profile=[cyan]{self.profile_id}[/] — /help, /quit")
+        self.console.print(
+            f"[bold]{brand_label()}[/] profile=[cyan]{self.profile_id}[/] — /help, /quit"
+        )
         while True:
             try:
                 line = await asyncio.to_thread(lambda: self.console.input("[bold green]>[/] "))

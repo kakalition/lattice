@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from lattice.branding import BRAND_NAME, logo_path
 from lattice.tools.file_safety import PathDeniedError, resolve_agent_path
 from lattice.tools.theme import LIGHT, hex_to_rgb255
 
@@ -80,6 +81,7 @@ def _build_pdf(
     from reportlab.lib.units import mm
     from reportlab.platypus import (
         HRFlowable,
+        Image as RLImage,
         KeepTogether,
         ListFlowable,
         ListItem,
@@ -106,8 +108,8 @@ def _build_pdf(
         rightMargin=18 * mm,
         topMargin=20 * mm,
         bottomMargin=18 * mm,
-        title=title or "Lattice",
-        author="Lattice",
+        title=title or BRAND_NAME,
+        author=BRAND_NAME,
     )
 
     styles = getSampleStyleSheet()
@@ -174,11 +176,28 @@ def _build_pdf(
 
     story: list[Any] = []
 
-    # Accent bar via a thin colored table
+    # Brand mark + accent bar
+    try:
+        mark = RLImage(str(logo_path(mark=True, dark=True)), width=10, height=10)
+        brand_row = Table([[mark, ""]], colWidths=[14, doc.width - 14], rowHeights=[12])
+        brand_row.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        story.append(brand_row)
+    except Exception:
+        pass
     bar = Table([[""]], colWidths=[doc.width], rowHeights=[3])
     bar.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), accent)]))
     story.append(bar)
-    story.append(Spacer(1, 14))
+    story.append(Spacer(1, 12))
 
     if title.strip():
         story.append(Paragraph(_esc(title.strip()), title_style))
@@ -279,15 +298,30 @@ def _build_pdf(
 
     def _footer(canvas: Any, _doc: Any) -> None:
         canvas.saveState()
-        # Close but not touching: ~3.5mm (~10pt) between rule and 8pt label ascent.
+        # Close but not touching: ~4.5mm between rule and 8pt label ascent.
         canvas.setStrokeColor(colors.Color(0.62, 0.62, 0.62))
         canvas.setLineWidth(0.6)
         text_y = 10 * mm
         line_y = text_y + 4.5 * mm
         canvas.line(18 * mm, line_y, A4[0] - 18 * mm, line_y)
+        # Brand mark + name (8pt gap between mark and text).
+        mark_size = 7
+        text_x = 18 * mm + mark_size + 3
+        try:
+            canvas.drawImage(
+                str(logo_path(mark=True, dark=True)),
+                18 * mm,
+                text_y - 0.5,
+                width=mark_size,
+                height=mark_size,
+                mask="auto",
+                preserveAspectRatio=True,
+            )
+        except Exception:
+            text_x = 18 * mm
         canvas.setFillColor(muted)
         canvas.setFont("Helvetica", 8)
-        canvas.drawString(18 * mm, text_y, "Lattice")
+        canvas.drawString(text_x, text_y, BRAND_NAME)
         canvas.drawRightString(A4[0] - 18 * mm, text_y, f"{canvas.getPageNumber()}")
         canvas.restoreState()
 
