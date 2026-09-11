@@ -9,6 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, RichLog, Static
 
+from lattice.channel.live_status import LiveTurnEvents, bind_live_events, idle_phrase
 from lattice.hitl.base import ApprovalDecision, ApprovalRequest, ClarifyRequest
 from lattice.models import Inbound, Outbound
 
@@ -48,6 +49,15 @@ class TuiHitl:
         choices = req.choices or ["OK"]
         choice = await self.app.push_screen_wait(HitlModal("Clarify", req.question, choices))
         return choice or ""
+
+
+class _TuiStatusSink:
+    def __init__(self, app: LatticeTui, profile_id: str) -> None:
+        self.app = app
+        self.profile_id = profile_id
+
+    async def set_status(self, text: str) -> None:
+        self.app.query_one("#status", Static).update(f"profile={self.profile_id} | {text}")
 
 
 class LatticeTui(App[None]):
@@ -123,16 +133,19 @@ class LatticeTui(App[None]):
             return
         self._busy = True
         log.write(f"[green]you:[/] {text}")
-        status.update(f"profile={self.profile_id} | thinking…")
+        status.update(f"profile={self.profile_id} | {idle_phrase(0)}")
+        live = LiveTurnEvents(_TuiStatusSink(self, self.profile_id), min_interval_s=0.2)
         try:
-            outbound = await self.handler(
-                Inbound(
-                    text=text,
-                    profile_id=self.profile_id,
-                    channel="cli",
-                    session_id=self.session_id,
+            async with bind_live_events(live):
+                await live.on_status("thinking")
+                outbound = await self.handler(
+                    Inbound(
+                        text=text,
+                        profile_id=self.profile_id,
+                        channel="cli",
+                        session_id=self.session_id,
+                    )
                 )
-            )
             self.session_id = outbound.session_id
             log.write(f"[magenta]lattice:[/] {outbound.text}")
         except Exception as exc:

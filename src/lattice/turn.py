@@ -13,6 +13,7 @@ from lattice.agent_app import (
     create_agent,
     resolve_enabled_tools,
 )
+from lattice.channel.live_status import current_live_events
 from lattice.config import LatticeSettings, load_settings
 from lattice.context import PressureConfig, compress
 from lattice.events import NullTurnEvents, TurnEvents
@@ -22,6 +23,7 @@ from lattice.models import Inbound, Outbound
 from lattice.profiles import get_profile
 from lattice.providers import (
     AuxiliaryClient,
+    build_openai_model,
     classify_provider_error,
     recovery_action,
 )
@@ -53,7 +55,8 @@ async def run_turn(
 ) -> Outbound:
     settings = settings or load_settings()
     turn_id = new_turn_id()
-    trace = LoggingTurnEvents(turn_id, inner=events or NullTurnEvents())
+    inner = events or current_live_events() or NullTurnEvents()
+    trace = LoggingTurnEvents(turn_id, inner=inner)
     events = trace
     hitl = hitl or AutoApproveHitl(approve_all=False)
     store = session_store or SessionStore(settings.home / "state.db")
@@ -185,10 +188,18 @@ async def run_turn(
     messages.append({"role": "user", "content": user_content})
     await store.save_messages(session_id, messages)
 
+    sticky_model = await store.get_sticky_primary_model(inbound.channel, inbound.user_id)
     primary_id = resolve_model_id(
-        settings, profile_model=profile.primary_model or profile.model
+        settings,
+        profile_model=profile.primary_model or profile.model,
+        sticky_model=sticky_model,
     )
-    agent = create_agent(settings, profile, system_prompt=system_prompt, model=model)
+    agent = create_agent(
+        settings,
+        profile,
+        system_prompt=system_prompt,
+        model=model or build_openai_model(settings, primary_id),
+    )
 
     async def _run_once(model_override: str | None = None) -> str:
         kwargs: dict[str, Any] = {
@@ -277,7 +288,13 @@ async def run_turn(
         trace.log_end(outbound_text=text or "", error=err)
 
     await events.on_stream_delta(text)
-    return Outbound(text=text, session_id=session_id, profile_id=profile.id)
+    media = [p for p in deps.outbound_media if p.exists()]
+    return Outbound(
+        text=text,
+        session_id=session_id,
+        profile_id=profile.id,
+        media_paths=media or None,
+    )
 
 
 async def echo_turn(inbound: Inbound) -> Outbound:

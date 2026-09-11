@@ -389,6 +389,20 @@ def doctor_report(home: Path | None = None) -> list[str]:
         except ImportError:
             ocr_status = "missing (uv add rapidocr onnxruntime)"
         lines.append(f"ocr/rapidocr: {ocr_status}")
+        try:
+            import reportlab  # noqa: F401
+
+            pdf_status = "ok"
+        except ImportError:
+            pdf_status = "missing (uv add reportlab)"
+        lines.append(f"pdf/reportlab: {pdf_status}")
+        try:
+            import matplotlib  # noqa: F401
+
+            chart_status = "ok"
+        except ImportError:
+            chart_status = "missing (uv add matplotlib)"
+        lines.append(f"chart/matplotlib: {chart_status}")
         from lattice.timeutil import resolve_timezone
 
         lines.append(f"timezone: {settings.timezone or resolve_timezone(root)}")

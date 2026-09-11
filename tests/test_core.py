@@ -218,6 +218,28 @@ async def test_session_store_clears_sticky_on_profile(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_store_sticky_primary_model(tmp_path: Path) -> None:
+    from lattice.config import LatticeSettings
+    from lattice.providers.settings import normalize_primary_model_id, resolve_model_id
+
+    store = SessionStore(tmp_path / "state.db")
+    await store.set_sticky_primary_model("telegram", "1", "openai/gpt-4o-mini")
+    assert await store.get_sticky_primary_model("telegram", "1") == "openai/gpt-4o-mini"
+    await store.clear_sticky_primary_model("telegram", "1")
+    assert await store.get_sticky_primary_model("telegram", "1") is None
+
+    settings = LatticeSettings(home=tmp_path)
+    assert (
+        resolve_model_id(settings, profile_model="profile/model", sticky_model="sticky/model")
+        == "sticky/model"
+    )
+    assert resolve_model_id(settings, profile_model="profile/model") == "profile/model"
+    assert normalize_primary_model_id("  a/b  ") == "a/b"
+    with pytest.raises(ValueError):
+        normalize_primary_model_id("")
+
+
+@pytest.mark.asyncio
 async def test_session_store(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "state.db")
     sid = await store.create(profile_id="default", user_id="u", channel="cli")

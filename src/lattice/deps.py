@@ -27,6 +27,8 @@ CORE_TOOL_NAMES = [
     "edit_file",
     "search_files",
     "ocr",
+    "generate_pdf",
+    "generate_chart",
     "web_search",
     "web_fetch",
     "clarify",
@@ -81,6 +83,7 @@ class TurnDeps:
     channel: str = "cli"
     cooldown: FallbackCooldown = field(default_factory=FallbackCooldown)
     delegate_depth: int = 0
+    outbound_media: list[Path] = field(default_factory=list)
 
 
 def truncate_result(text: str, limit: int = 30_000) -> str:

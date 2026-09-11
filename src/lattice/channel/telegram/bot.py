@@ -10,6 +10,12 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from lattice.channel.live_status import (
+    LiveTurnEvents,
+    bind_live_events,
+    idle_phrase,
+    typing_keepalive,
+)
 from lattice.channel.telegram.commands import COMMANDS
 from lattice.channel.telegram.formatting import chunk_text, markdown_to_telegram_html
 from lattice.channel.telegram.keyboards import inline_keyboard
@@ -202,7 +208,43 @@ class TelegramBot:
             )
 
         async def on_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            await update.message.reply_text(self.settings.agent.primary_model)
+            if not update.message or not update.effective_user:
+                return
+            from lattice.profiles import get_profile
+            from lattice.providers.settings import normalize_primary_model_id, resolve_model_id
+
+            uid = str(update.effective_user.id)
+            args = context.args or []
+            if args and args[0].lower() == "clear":
+                await self.store.clear_sticky_primary_model("telegram", uid)
+                await update.message.reply_text("primary model sticky cleared")
+                return
+            if args:
+                try:
+                    model_id = normalize_primary_model_id(" ".join(args))
+                except ValueError as exc:
+                    await update.message.reply_text(str(exc))
+                    return
+                await self.store.set_sticky_primary_model("telegram", uid, model_id)
+                await update.message.reply_text(f"primary model → {model_id}")
+                return
+            sticky = await self.store.get_sticky_primary_model("telegram", uid)
+            pid = await self.store.get_sticky_profile("telegram", uid) or "default"
+            profile_model = None
+            try:
+                profile = get_profile(pid, self.settings.home)
+                profile_model = profile.primary_model or profile.model
+            except Exception:
+                pass
+            effective = resolve_model_id(
+                self.settings, profile_model=profile_model, sticky_model=sticky
+            )
+            if sticky:
+                await update.message.reply_text(f"{effective} (sticky)")
+            elif profile_model:
+                await update.message.reply_text(f"{effective} (profile {pid})")
+            else:
+                await update.message.reply_text(f"{effective} (config)")
 
         async def on_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(
@@ -324,21 +366,23 @@ class TelegramBot:
                 return
 
             async def _run_turn(turn_text: str, paths: list[Path]) -> None:
-                await context.bot.send_chat_action(
-                    chat_id=update.effective_chat.id, action="typing"
-                )
+                chat_id = update.effective_chat.id
+
+                async def _typing() -> None:
+                    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+                await _typing()
                 with contextlib.suppress(Exception):
                     await update.message.set_reaction("👀")
-                status = await update.message.reply_text("thinking…")
+                opening = idle_phrase(0)
+                status = await update.message.reply_text(opening)
                 sticky = await self.store.get_sticky_profile("telegram", str(uid)) or "default"
-                # When HITL prompts are sent after "thinking…", editing that status
+                # When HITL prompts are sent after the status bubble, editing that status
                 # buries the final reply above the approvals — send a new message instead.
                 hitl_after_status = [False]
                 self.hitl.set_active_user(str(uid))
                 self.hitl.bind_send(
-                    await _send_for_hitl(
-                        context, update.effective_chat.id, mark=hitl_after_status
-                    )
+                    await _send_for_hitl(context, chat_id, mark=hitl_after_status)
                 )
                 logger.info(
                     "recv user=%s profile=%s text=%s",
@@ -346,18 +390,45 @@ class TelegramBot:
                     sticky,
                     (turn_text[:200] + "…") if len(turn_text) > 200 else turn_text,
                 )
+
+                class _TelegramStatusSink:
+                    def __init__(self) -> None:
+                        self._last = opening
+
+                    async def set_status(self, text: str) -> None:
+                        if text == self._last:
+                            return
+                        self._last = text
+                        with contextlib.suppress(Exception):
+                            await context.bot.edit_message_text(
+                                chat_id=chat_id,
+                                message_id=status.message_id,
+                                text=text,
+                            )
+
+                stop_typing = asyncio.Event()
+                typing_task = asyncio.create_task(
+                    typing_keepalive(_typing, stop=stop_typing)
+                )
+                live = LiveTurnEvents(_TelegramStatusSink())
                 try:
-                    outbound = await self.handler(
-                        Inbound(
-                            text=turn_text,
-                            profile_id=sticky,
-                            user_id=str(uid),
-                            channel="telegram",
-                            session_id=self._sessions.get(uid),
-                            media_paths=paths,
+                    async with bind_live_events(live):
+                        await live.on_status("thinking")
+                        outbound = await self.handler(
+                            Inbound(
+                                text=turn_text,
+                                profile_id=sticky,
+                                user_id=str(uid),
+                                channel="telegram",
+                                session_id=self._sessions.get(uid),
+                                media_paths=paths,
+                            )
                         )
-                    )
                 finally:
+                    stop_typing.set()
+                    typing_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await typing_task
                     self.hitl.set_active_user(None)
                 logger.info("send user=%s chars=%d", uid, len(outbound.text or ""))
                 if outbound.session_id:
@@ -366,12 +437,12 @@ class TelegramBot:
                 if hitl_after_status[0]:
                     with contextlib.suppress(Exception):
                         await context.bot.edit_message_text(
-                            chat_id=update.effective_chat.id,
+                            chat_id=chat_id,
                             message_id=status.message_id,
                             text="…",
                         )
                 await send_html(
-                    update.effective_chat.id,
+                    chat_id,
                     outbound.text,
                     buttons=[{"label": b.label, "data": b.data} for b in outbound.buttons]
                     if outbound.buttons
@@ -381,9 +452,18 @@ class TelegramBot:
                 )
                 if outbound.media_paths:
                     for mp in outbound.media_paths:
-                        await context.bot.send_document(
-                            chat_id=update.effective_chat.id, document=str(mp)
-                        )
+                        suf = Path(mp).suffix.lower()
+                        try:
+                            if suf in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+                                await context.bot.send_photo(
+                                    chat_id=chat_id, photo=str(mp)
+                                )
+                            else:
+                                await context.bot.send_document(
+                                    chat_id=chat_id, document=str(mp)
+                                )
+                        except Exception:
+                            logger.exception("failed sending media %s", mp)
 
             self._busy.add(uid)
             try:

@@ -27,15 +27,36 @@ def resolve_base_url(settings: LatticeSettings) -> str | None:
     )
 
 
-def resolve_model_id(settings: LatticeSettings, *, profile_model: str | None = None) -> str:
-    """Primary (orchestrator) model id."""
+def resolve_model_id(
+    settings: LatticeSettings,
+    *,
+    profile_model: str | None = None,
+    sticky_model: str | None = None,
+) -> str:
+    """Primary (orchestrator) model id. Sticky chat override wins over profile and config."""
+    if sticky_model:
+        return sticky_model
     if profile_model:
         return profile_model
     return settings.agent.primary_model
 
 
-def model_name(settings: LatticeSettings, *, profile_model: str | None = None) -> str:
-    return resolve_model_id(settings, profile_model=profile_model)
+def normalize_primary_model_id(raw: str) -> str:
+    mid = (raw or "").strip()
+    if not mid or "\n" in mid or "\r" in mid or len(mid) > 200:
+        raise ValueError("invalid model id")
+    return mid
+
+
+def model_name(
+    settings: LatticeSettings,
+    *,
+    profile_model: str | None = None,
+    sticky_model: str | None = None,
+) -> str:
+    return resolve_model_id(
+        settings, profile_model=profile_model, sticky_model=sticky_model
+    )
 
 
 def secondary_model_name(settings: LatticeSettings, *, profile_secondary: str | None = None) -> str:

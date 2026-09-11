@@ -9,7 +9,7 @@ COMMANDS = [
     ("sessions", "List recent sessions"),
     ("resume", "Resume session by id"),
     ("forget", "Forget a memory id"),
-    ("model", "Show current model"),
+    ("model", "Show or set primary model"),
     ("tools", "List enabled tool policy"),
     ("profile", "Switch or remove profile"),
 ]

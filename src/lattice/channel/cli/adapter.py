@@ -9,11 +9,31 @@ from collections.abc import Awaitable, Callable
 from rich.console import Console
 from rich.markdown import Markdown
 
+from lattice.channel.live_status import LiveTurnEvents, bind_live_events, idle_phrase
 from lattice.hitl.cli_adapter import CliHitlAdapter
 from lattice.models import Inbound, Outbound
 from lattice.session import SessionStore
 
 logger = logging.getLogger("lattice.channel.cli")
+
+
+class _RichStatusSink:
+    def __init__(self, console: Console) -> None:
+        self._status = console.status(idle_phrase(0), spinner="dots")
+        self._started = False
+
+    def start(self) -> None:
+        if not self._started:
+            self._status.start()
+            self._started = True
+
+    def stop(self) -> None:
+        if self._started:
+            self._status.stop()
+            self._started = False
+
+    async def set_status(self, text: str) -> None:
+        self._status.update(text)
 
 
 class CliAdapter:
@@ -41,6 +61,29 @@ class CliAdapter:
         self.console.print(Markdown(msg.text))
         if msg.session_id:
             self.session_id = msg.session_id
+
+    async def _handle(self, handler: Callable[[Inbound], Awaitable[Outbound]], text: str) -> None:
+        sink = _RichStatusSink(self.console)
+        sink.start()
+        live = LiveTurnEvents(sink, min_interval_s=0.2)
+        try:
+            async with bind_live_events(live):
+                await live.on_status("thinking")
+                inbound = Inbound(
+                    text=text,
+                    profile_id=self.profile_id,
+                    user_id="local",
+                    channel="cli",
+                    session_id=self.session_id,
+                    steer_text=self._steer,
+                )
+                self._steer = None
+                logger.info("recv profile=%s text=%s", self.profile_id, text[:200])
+                outbound = await handler(inbound)
+                logger.info("send chars=%d", len(outbound.text or ""))
+                await self.send(outbound)
+        finally:
+            sink.stop()
 
     async def run(self, handler: Callable[[Inbound], Awaitable[Outbound]]) -> None:
         self.console.print(f"[bold]Lattice[/] profile=[cyan]{self.profile_id}[/] — /help, /quit")
@@ -76,9 +119,47 @@ class CliAdapter:
                 await self.store.set_sticky_profile("cli", "local", self.profile_id)
                 self.console.print(f"switched profile → {self.profile_id} (new session)")
                 continue
+            if line == "/model" or line.startswith("/model "):
+                from lattice.config import load_settings
+                from lattice.profiles import get_profile
+                from lattice.providers.settings import normalize_primary_model_id, resolve_model_id
+
+                settings = load_settings()
+                rest = line[len("/model") :].strip()
+                if rest.lower() == "clear":
+                    await self.store.clear_sticky_primary_model("cli", "local")
+                    self.console.print("primary model sticky cleared")
+                    continue
+                if rest:
+                    try:
+                        model_id = normalize_primary_model_id(rest)
+                    except ValueError as exc:
+                        self.console.print(f"[red]{exc}[/]")
+                        continue
+                    await self.store.set_sticky_primary_model("cli", "local", model_id)
+                    self.console.print(f"primary model → {model_id}")
+                    continue
+                sticky = await self.store.get_sticky_primary_model("cli", "local")
+                profile_model = None
+                try:
+                    profile = get_profile(self.profile_id, settings.home)
+                    profile_model = profile.primary_model or profile.model
+                except Exception:
+                    pass
+                effective = resolve_model_id(
+                    settings, profile_model=profile_model, sticky_model=sticky
+                )
+                if sticky:
+                    self.console.print(f"{effective} (sticky)")
+                elif profile_model:
+                    self.console.print(f"{effective} (profile {self.profile_id})")
+                else:
+                    self.console.print(f"{effective} (config)")
+                continue
             if line == "/help":
                 self.console.print(
-                    "/profile <id>  /profile remove <id>  /sessions  /resume <id>  /stop  /quit"
+                    "/profile <id>  /profile remove <id>  /model [id|clear]  "
+                    "/sessions  /resume <id>  /stop  /quit"
                 )
                 continue
             if line == "/sessions":
@@ -105,32 +186,9 @@ class CliAdapter:
 
             self._busy = True
             try:
-                inbound = Inbound(
-                    text=line,
-                    profile_id=self.profile_id,
-                    user_id="local",
-                    channel="cli",
-                    session_id=self.session_id,
-                    steer_text=self._steer,
-                )
-                self._steer = None
-                logger.info("recv profile=%s text=%s", self.profile_id, line[:200])
-                outbound = await handler(inbound)
-                logger.info("send chars=%d", len(outbound.text or ""))
-                await self.send(outbound)
+                await self._handle(handler, line)
                 while not self._queue.empty():
                     nxt = await self._queue.get()
-                    logger.info("recv profile=%s text=%s", self.profile_id, nxt[:200])
-                    outbound = await handler(
-                        Inbound(
-                            text=nxt,
-                            profile_id=self.profile_id,
-                            user_id="local",
-                            channel="cli",
-                            session_id=self.session_id,
-                        )
-                    )
-                    logger.info("send chars=%d", len(outbound.text or ""))
-                    await self.send(outbound)
+                    await self._handle(handler, nxt)
             finally:
                 self._busy = False

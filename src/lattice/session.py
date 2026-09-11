@@ -52,6 +52,16 @@ class SessionStore:
         )
         await conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS sticky_primary_models (
+                channel TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                PRIMARY KEY (channel, user_id)
+            )
+            """
+        )
+        await conn.execute(
+            """
             CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
                 id, title, messages_json, content='sessions', content_rowid='rowid'
             )
@@ -225,6 +235,46 @@ class SessionStore:
                 )
                 await conn.commit()
                 return cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
+            finally:
+                await conn.close()
+
+    async def set_sticky_primary_model(self, channel: str, user_id: str, model_id: str) -> None:
+        async with _LOCK:
+            conn = await self.connect()
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO sticky_primary_models (channel, user_id, model_id)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(channel, user_id) DO UPDATE SET model_id = excluded.model_id
+                    """,
+                    (channel, user_id, model_id),
+                )
+                await conn.commit()
+            finally:
+                await conn.close()
+
+    async def get_sticky_primary_model(self, channel: str, user_id: str) -> str | None:
+        conn = await self.connect()
+        try:
+            cur = await conn.execute(
+                "SELECT model_id FROM sticky_primary_models WHERE channel = ? AND user_id = ?",
+                (channel, user_id),
+            )
+            row = await cur.fetchone()
+            return row[0] if row else None
+        finally:
+            await conn.close()
+
+    async def clear_sticky_primary_model(self, channel: str, user_id: str) -> None:
+        async with _LOCK:
+            conn = await self.connect()
+            try:
+                await conn.execute(
+                    "DELETE FROM sticky_primary_models WHERE channel = ? AND user_id = ?",
+                    (channel, user_id),
+                )
+                await conn.commit()
             finally:
                 await conn.close()
 
