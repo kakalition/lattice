@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import RunContext
 
 from lattice.audit import audit_log
@@ -66,8 +66,18 @@ CORE_TOOL_NAMES = [
 ]
 
 
-@dataclass
-class TurnDeps:
+class ApprovalMemory(set[str]):
+    """Set of approved HITL keys.
+
+    Subclasses ``set`` so pydantic keeps the *same instance* on assignment (a plain
+    ``set[str]`` field is copied on validation, which would break the deliberate
+    primary↔secondary sharing of approval memory in ``run_secondary``).
+    """
+
+
+class TurnDeps(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     settings: LatticeSettings
     profile: Profile
     hitl: HitlPort
@@ -77,18 +87,18 @@ class TurnDeps:
     sqlite_registry: SqliteRegistry
     sqlite_pool: SqlitePool
     mcp: McpHostManager
-    events: TurnEvents = field(default_factory=NullTurnEvents)
-    todos: TodoList = field(default_factory=TodoList)
-    workspace: Path = field(default_factory=Path.cwd)
-    approval_memory: set[str] = field(default_factory=set)
+    events: TurnEvents = Field(default_factory=NullTurnEvents)
+    todos: TodoList = Field(default_factory=TodoList)
+    workspace: Path = Field(default_factory=Path.cwd)
+    approval_memory: ApprovalMemory = Field(default_factory=ApprovalMemory)
     consecutive_denials: int = 0
-    enabled_tools: list[str] = field(default_factory=list)
-    skills: list = field(default_factory=list)
+    enabled_tools: list[str] = Field(default_factory=list)
+    skills: list = Field(default_factory=list)
     user_id: str = "local"
     channel: str = "cli"
-    cooldown: FallbackCooldown = field(default_factory=FallbackCooldown)
+    cooldown: FallbackCooldown = Field(default_factory=FallbackCooldown)
     delegate_depth: int = 0
-    outbound_media: list[Path] = field(default_factory=list)
+    outbound_media: list[Path] = Field(default_factory=list)
 
 
 def truncate_result(text: str, limit: int = 30_000) -> str:

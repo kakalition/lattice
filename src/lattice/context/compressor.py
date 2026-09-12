@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel
 
 from lattice.context.pressure import PressureConfig
 from lattice.providers.auxiliary import AuxiliaryClient
 
 
-@dataclass
-class CompressResult:
+class CompressResult(BaseModel):
     messages: list[dict[str, Any]]
     summary: str
     compressed: bool

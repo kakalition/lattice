@@ -3,25 +3,24 @@
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import BaseModel, Field
 
 from lattice.paths import lattice_home
 
 
-@dataclass
-class Profile:
+class Profile(BaseModel):
     id: str
     description: str = ""
     soul: str = ""
     user_notes: str = ""
-    skills_prefer: list[str] = field(default_factory=list)
-    skills_disable: list[str] = field(default_factory=list)
-    tools_allow: list[str] = field(default_factory=lambda: ["*"])
-    tools_deny: list[str] = field(default_factory=list)
+    skills_prefer: list[str] = Field(default_factory=list)
+    skills_disable: list[str] = Field(default_factory=list)
+    tools_allow: list[str] = Field(default_factory=lambda: ["*"])
+    tools_deny: list[str] = Field(default_factory=list)
     sqlite_allow: list[str] | None = None
     memory_collection: str | None = None
     model: str | None = None  # legacy alias for primary_model

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
+
+from pydantic import BaseModel
 
 from lattice.runtime import get_cwd
 from lattice.tools.deadline import with_deadline
 
 
-@dataclass
-class ShellResult:
+class ShellResult(BaseModel):
     exit_code: int
     stdout: str
     stderr: str

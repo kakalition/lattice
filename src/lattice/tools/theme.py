@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict
 
 
 def oklch_to_hex(L: float, C: float, H: float, *, alpha: float = 1.0) -> str:
@@ -48,8 +49,9 @@ def hex_to_rgb255(color: str) -> tuple[int, int, int]:
     return int(r * 255), int(g * 255), int(b * 255)
 
 
-@dataclass(frozen=True)
-class ShadcnTheme:
+class ShadcnTheme(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     background: str
     foreground: str
     card: str

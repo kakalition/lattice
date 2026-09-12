@@ -2,25 +2,33 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import warnings
 from typing import Any
 
+from pydantic import BaseModel, Field
 
-@dataclass
-class McpServerConfig:
+
+class McpServerConfig(BaseModel):
     name: str
     command: str | None = None
-    args: list[str] = field(default_factory=list)
+    args: list[str] = Field(default_factory=list)
     url: str | None = None
-    env: dict[str, str] = field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
 
 
-@dataclass
-class McpToolInfo:
-    server: str
-    name: str
-    description: str
-    schema: dict[str, Any] = field(default_factory=dict)
+# The ``schema`` field name shadows the deprecated ``BaseModel.schema`` attribute,
+# so pydantic emits a UserWarning at class-creation time. The public attribute name
+# is used by ``lattice.mcp.bridge`` — keep it and silence the warning instead.
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message='Field name "schema"')
+
+    class McpToolInfo(BaseModel):
+        server: str
+        name: str
+        description: str
+        # ``schema`` intentionally shadows the deprecated BaseModel.schema attribute;
+        # the public name is relied on by lattice.mcp.bridge.
+        schema: dict[str, Any] = Field(default_factory=dict)  # pyright: ignore[reportIncompatibleMethodOverride]
 
 
 class McpHostManager:

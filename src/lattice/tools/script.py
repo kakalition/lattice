@@ -6,8 +6,9 @@ import asyncio
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from lattice.config import ScriptsConfig
 from lattice.paths import lattice_home
@@ -18,8 +19,7 @@ LANG_EXTS = {"python": ".py", "node": ".js", "bash": ".sh"}
 LANG_BINARIES = {"python": ("python3", "python"), "node": ("node",), "bash": ("bash",)}
 
 
-@dataclass
-class ScriptResult:
+class ScriptResult(BaseModel):
     exit_code: int
     stdout: str
     stderr: str

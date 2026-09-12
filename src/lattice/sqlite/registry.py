@@ -8,18 +8,17 @@ editing ``lattice.yaml``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import BaseModel
 
 from lattice.config import LatticeSettings, SqliteDatabaseConfig
 from lattice.tools.file_safety import is_denied_path
 
 
-@dataclass
-class DbEntry:
+class DbEntry(BaseModel):
     name: str
     path: Path
     read_only: bool = False

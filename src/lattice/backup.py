@@ -9,10 +9,11 @@ import sqlite3
 import tarfile
 import tempfile
 from collections.abc import Iterable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 from lattice import __version__
 from lattice.paths import lattice_home
@@ -32,16 +33,18 @@ _ALWAYS_SKIP_NAMES = frozenset(
 _ALWAYS_SKIP_SUFFIXES = (".pyc", ".pyo", ".tmp")
 
 
-@dataclass(frozen=True)
-class BackupResult:
+class BackupResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     archive: Path
     home: Path
     bytes: int
     file_count: int
 
 
-@dataclass(frozen=True)
-class RestoreResult:
+class RestoreResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     home: Path
     archive: Path
     displaced: Path | None

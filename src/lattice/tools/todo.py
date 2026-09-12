@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
-@dataclass
-class TodoItem:
+class TodoItem(BaseModel):
     id: int
     text: str
     done: bool = False
 
 
-@dataclass
-class TodoList:
-    items: list[TodoItem] = field(default_factory=list)
-    _next_id: int = 1
+class TodoList(BaseModel):
+    items: list[TodoItem] = Field(default_factory=list)
+    _next_id: int = PrivateAttr(default=1)
 
     def add(self, text: str) -> TodoItem:
         item = TodoItem(id=self._next_id, text=text)

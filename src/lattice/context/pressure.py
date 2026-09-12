@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pydantic import BaseModel
 
 
-@dataclass
-class PressureConfig:
+class PressureConfig(BaseModel):
     ratio: float = 0.5
     model_context_tokens: int = 128_000
     chars_per_token: float = 4.0

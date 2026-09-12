@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from lattice.models import Inbound, Outbound
 from lattice.paths import lattice_home
@@ -16,14 +17,15 @@ from lattice.paths import lattice_home
 logger = logging.getLogger("lattice.scheduler")
 
 
-@dataclass
-class Job:
+class Job(BaseModel):
+    model_config = ConfigDict(extra="ignore")  # tolerate/ignore unknown keys in jobs.json
+
     id: str
     prompt: str
     profile: str = "default"
     deliver: str = "none"  # telegram|cli|none
     schedule: str = ""  # cron-like: five fields, or "@once" / "once"
-    preapproved_tools: list[str] = field(default_factory=list)
+    preapproved_tools: list[str] = Field(default_factory=list)
     enabled: bool = True
     timezone: str = "UTC"
     last_run: str | None = None
@@ -42,7 +44,7 @@ def load_jobs(home: Path | None = None) -> list[Job]:
     raw = json.loads(path.read_text(encoding="utf-8"))
     jobs: list[Job] = []
     for item in raw.get("jobs") or []:
-        jobs.append(Job(**{k: v for k, v in item.items() if k in Job.__dataclass_fields__}))
+        jobs.append(Job.model_validate(item))
     return jobs
 
 
@@ -193,8 +195,7 @@ def is_job_due(
     return cron_matches(sched, local)
 
 
-@dataclass
-class SchedulerRunner:
+class SchedulerRunner(BaseModel):
     home: Path | None = None
 
     def due_jobs(self, now: datetime | None = None) -> list[Job]:

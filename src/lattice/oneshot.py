@@ -12,10 +12,11 @@ import logging
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 from lattice.paths import lattice_home
 
@@ -24,9 +25,10 @@ logger = logging.getLogger("lattice.oneshot")
 STATE_NAME = "setup-once.json"
 
 
-@dataclass(frozen=True)
-class OneshotStep:
+class OneshotStep(BaseModel):
     """A boot-time step that should run once (until version bumps or check fails)."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     id: str
     description: str

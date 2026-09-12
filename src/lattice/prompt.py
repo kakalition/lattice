@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field
 
 # Byte-stable routing instructions (never put per-turn notices here).
 PRIMARY_ROUTING = """\
@@ -14,13 +14,12 @@ or call schedule/clarify/shell/write tools.
 """
 
 
-@dataclass
-class PromptBundle:
+class PromptBundle(BaseModel):
     identity: str
     context: str = ""
     volatile: str = ""
     skill_index: str = ""
-    notices: list[str] = field(default_factory=list)
+    notices: list[str] = Field(default_factory=list)
     routing: str = PRIMARY_ROUTING
 
     def stable_system_prompt(self) -> str:

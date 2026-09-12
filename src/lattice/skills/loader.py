@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel
 
 from lattice.paths import lattice_home
 
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.S)
 
 
-@dataclass
-class Skill:
+class Skill(BaseModel):
     name: str
     description: str
     body: str
