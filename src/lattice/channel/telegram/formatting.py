@@ -8,6 +8,8 @@ import re
 _CODE_FENCE = re.compile(r"```(?:[a-zA-Z0-9_+-]*\n)?(.*?)```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`\n]+)`")
 _LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+# ATX heading: 1-6 leading '#', a space, then text (optional closing '#'s).
+_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _ITALIC = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 _PLACEHOLDER = re.compile(r"\x00(\d+)\x00")
@@ -62,8 +64,9 @@ def markdown_tables_to_lists(text: str) -> str:
 def markdown_to_telegram_html(text: str) -> str:
     """Convert common Markdown emphasis to Telegram HTML; escape everything else.
 
-    Handles fenced/inline code, links, ``**bold**``, and ``*italic*``.
-    Pipe tables are rewritten to bullets first. Snake_case underscores stay plain.
+    Handles fenced/inline code, links, ATX headings (Telegram has no heading tag,
+    so they become bold), ``**bold**``, and ``*italic*``. Pipe tables are
+    rewritten to bullets first. Snake_case underscores stay plain.
     """
     text = markdown_tables_to_lists(text)
     held: list[str] = []
@@ -89,6 +92,7 @@ def markdown_to_telegram_html(text: str) -> str:
     out = _CODE_FENCE.sub(fence, text)
     out = _INLINE_CODE.sub(inline, out)
     out = _LINK.sub(link, out)
+    out = _HEADING.sub(r"**\1**", out)
     out = html.escape(out, quote=False)
     out = _BOLD.sub(r"<b>\1</b>", out)
     out = _ITALIC.sub(r"<i>\1</i>", out)

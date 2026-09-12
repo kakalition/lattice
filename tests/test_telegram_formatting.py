@@ -39,6 +39,24 @@ def test_chunk_text() -> None:
     assert chunk_text("abc", 2) == ["ab", "c"]
 
 
+def test_markdown_headings_become_bold() -> None:
+    assert markdown_to_telegram_html("## Two confirmations") == "<b>Two confirmations</b>"
+    assert markdown_to_telegram_html("# Title\nbody") == "<b>Title</b>\nbody"
+    assert markdown_to_telegram_html("### Details ###") == "<b>Details</b>"
+
+
+def test_markdown_heading_inside_code_is_untouched() -> None:
+    assert markdown_to_telegram_html("```\n## not a heading\n```") == "<pre>## not a heading</pre>"
+
+
+def test_markdown_heading_not_mid_line() -> None:
+    assert markdown_to_telegram_html("issue #123 open") == "issue #123 open"
+
+
+def test_markdown_heading_with_inline_code() -> None:
+    assert markdown_to_telegram_html("## Use `x`") == "<b>Use <code>x</code></b>"
+
+
 def test_markdown_tables_become_lists() -> None:
     raw = """Tips:
 | Tip | Detail |
