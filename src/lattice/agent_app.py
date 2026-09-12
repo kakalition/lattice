@@ -108,10 +108,14 @@ def create_agent(
     from lattice.providers.settings import resolve_model_id
 
     primary = profile.primary_model or profile.model
-    resolved = model or build_openai_model(settings, resolve_model_id(settings, profile_model=primary))
-    built = list(toolsets) if toolsets is not None else [
-        build_core_toolset(settings, mcp or McpHostManager(), exclude=exclude)
-    ]
+    resolved = model or build_openai_model(
+        settings, resolve_model_id(settings, profile_model=primary)
+    )
+    built = (
+        list(toolsets)
+        if toolsets is not None
+        else [build_core_toolset(settings, mcp or McpHostManager(), exclude=exclude)]
+    )
     return Agent(
         resolved,
         deps_type=TurnDeps,
@@ -139,8 +143,16 @@ def resolve_enabled_tools(
 
 
 def build_memory_for_profile(settings: LatticeSettings, profile: Profile) -> Memory:
-    from lattice.providers.settings import apply_provider_env
+    from lattice.providers.settings import apply_provider_env, auxiliary_model_name
 
     apply_provider_env(settings.provider)
     collection = profile.memory_collection or f"lattice-{profile.id}"
-    return build_memory(collection=collection, path=settings.home / "qdrant")
+    # mem0 runs an LLM to extract memories; keep it on the configured auxiliary
+    # model instead of mem0's built-in gpt-4o-mini default, and let reasoning
+    # models use their own parameter set (mem0 only auto-detects o1/o3/gpt-5).
+    return build_memory(
+        collection=collection,
+        path=settings.home / "qdrant",
+        llm_model=auxiliary_model_name(settings, profile_aux=profile.auxiliary_model),
+        is_reasoning_model=settings.memory.is_reasoning_model,
+    )

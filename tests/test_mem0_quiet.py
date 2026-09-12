@@ -47,6 +47,95 @@ def test_build_memory_reuses_instance(tmp_path: Path) -> None:
     assert a is b
 
 
+def test_mem0_search_uses_filters_not_top_level_user_id(monkeypatch, tmp_path: Path) -> None:
+    """Regression: search() passed user_id= at the top level and always failed.
+
+    mem0 v2 rejects top-level entity kwargs on search(), raising ValueError. A
+    blanket ``except Exception`` then returned the empty fallback, so memory
+    search silently returned nothing regardless of what had been stored.
+    """
+    import asyncio
+
+    from lattice.memory.mem0_qdrant import Mem0QdrantMemory
+
+    captured: dict = {}
+
+    class _FakeInner:
+        def search(self, query, **kwargs):
+            captured["query"] = query
+            captured["kwargs"] = kwargs
+            if "user_id" in kwargs:
+                raise ValueError(
+                    "Top-level entity parameters frozenset({'user_id'}) are not supported "
+                    "in search(). Use filters={'user_id': '...'} instead"
+                )
+            return {"results": [{"id": "1", "memory": "flat white", "metadata": {}}]}
+
+    mem = Mem0QdrantMemory.__new__(Mem0QdrantMemory)
+    mem.collection = "lattice-test"
+    mem._fallback = None  # type: ignore[assignment]
+    mem._memory = _FakeInner()  # type: ignore[assignment]
+
+    hits = asyncio.run(mem.search("coffee", limit=5))
+
+    assert captured["query"] == "coffee"
+    assert "user_id" not in captured["kwargs"], "top-level user_id still passed"
+    assert captured["kwargs"]["filters"] == {"user_id": "lattice-test"}
+    assert hits and hits[0]["text"] == "flat white"
+
+
+def test_mem0_llm_model_comes_from_config_not_the_builtin_default(tmp_path: Path) -> None:
+    """Regression: mem0 silently used gpt-4o-mini regardless of config.
+
+    mem0's own default LLM is gpt-4o-mini. It was only overridden by the legacy
+    ``LATTICE_AGENT__MODEL`` env var, which nothing sets, so memory extraction
+    billed OpenAI even when lattice.yaml pointed at another provider.
+    """
+    from lattice.memory.mem0_qdrant import _mem0_config
+
+    cfg = _mem0_config(
+        collection="c", path=tmp_path, client=None, llm_model="inception/mercury-2.5"
+    )
+    assert cfg["llm"]["config"]["model"] == "inception/mercury-2.5"
+    assert cfg["llm"]["config"]["model"] != "gpt-4o-mini"
+
+
+def test_mem0_llm_model_ignores_legacy_env(monkeypatch, tmp_path: Path) -> None:
+    """The legacy env var must not outrank an explicit model."""
+    from lattice.memory.mem0_qdrant import _mem0_config
+
+    monkeypatch.setenv("LATTICE_AGENT__MODEL", "legacy/should-not-win")
+    cfg = _mem0_config(
+        collection="c", path=tmp_path, client=None, llm_model="inception/mercury-2.5"
+    )
+    assert cfg["llm"]["config"]["model"] == "inception/mercury-2.5"
+
+
+def test_build_memory_for_profile_uses_auxiliary_model(tmp_path: Path, monkeypatch) -> None:
+    """The mem0 backend must carry the profile's configured auxiliary model."""
+    import lattice.agent_app as agent_app
+    from lattice.config import LatticeSettings
+    from lattice.profiles import Profile
+
+    # Avoid touching the network/embedder: only assert the resolved model.
+    captured: dict = {}
+
+    def fake_build_memory(*, collection, path=None, llm_model=None, is_reasoning_model=None):
+        captured["model"] = llm_model
+        captured["reasoning"] = is_reasoning_model
+        return object()
+
+    monkeypatch.setattr(agent_app, "build_memory", fake_build_memory)
+    settings = LatticeSettings(home=tmp_path)
+    settings.agent.auxiliary_model = "inception/mercury-2.5"
+
+    agent_app.build_memory_for_profile(settings, Profile(id="p"))
+    assert captured["model"] == "inception/mercury-2.5"
+
+    agent_app.build_memory_for_profile(settings, Profile(id="q", auxiliary_model="other/model"))
+    assert captured["model"] == "other/model"
+
+
 def test_mem0_qdrant_init_enables_bm25(tmp_path: Path, caplog) -> None:
     with caplog.at_level(logging.WARNING):
         mem = Mem0QdrantMemory(collection="quiet-test", path=tmp_path / "qdrant-init")

@@ -16,6 +16,8 @@ from typing import Any
 
 from lattice.paths import lattice_home
 
+logger = logging.getLogger("lattice.memory")
+
 _EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 _EMBED_DIMS = 384
 
@@ -127,7 +129,14 @@ def _shared_qdrant_client(path: Path) -> Any:
         return created
 
 
-def _mem0_config(*, collection: str, path: Path, client: Any) -> dict[str, Any]:
+def _mem0_config(
+    *,
+    collection: str,
+    path: Path,
+    client: Any,
+    llm_model: str | None = None,
+    is_reasoning_model: bool | None = None,
+) -> dict[str, Any]:
     api_key = (
         os.environ.get("OPENAI_API_KEY")
         or os.environ.get("OPENROUTER_API_KEY")
@@ -138,15 +147,19 @@ def _mem0_config(*, collection: str, path: Path, client: Any) -> dict[str, Any]:
         or os.environ.get("LATTICE_PROVIDER__BASE_URL")
         or ("https://openrouter.ai/api/v1" if os.environ.get("OPENROUTER_API_KEY") else None)
     )
-    model = (
-        os.environ.get("LATTICE_AGENT__MODEL")
-        or "gpt-4o-mini"
-    )
+    # mem0 calls an LLM to extract facts; without an explicit model it hardcodes
+    # gpt-4o-mini, which silently bills OpenAI even when lattice.yaml configures
+    # a different provider. Callers pass settings.agent.auxiliary_model.
+    model = llm_model or os.environ.get("LATTICE_AGENT__MODEL") or "gpt-4o-mini"
     llm_config: dict[str, Any] = {"model": model}
     if api_key:
         llm_config["api_key"] = api_key
     if base_url:
         llm_config["openai_base_url"] = base_url
+    if is_reasoning_model is not None:
+        # Drops max_tokens/temperature for reasoning models, which otherwise
+        # truncate their JSON output and silently extract nothing.
+        llm_config["is_reasoning_model"] = is_reasoning_model
 
     return {
         "vector_store": {
@@ -205,7 +218,14 @@ class InMemoryMemory:
 
 
 class Mem0QdrantMemory:
-    def __init__(self, *, collection: str, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        collection: str,
+        path: Path | None = None,
+        llm_model: str | None = None,
+        is_reasoning_model: bool | None = None,
+    ) -> None:
         self.collection = collection
         self.path = path or (lattice_home() / "qdrant")
         self.path.mkdir(parents=True, exist_ok=True)
@@ -225,17 +245,31 @@ class Mem0QdrantMemory:
 
                 client = _shared_qdrant_client(self.path)
                 self._memory = Memory.from_config(
-                    _mem0_config(collection=collection, path=self.path, client=client)
+                    _mem0_config(
+                        collection=collection,
+                        path=self.path,
+                        client=client,
+                        llm_model=llm_model,
+                        is_reasoning_model=is_reasoning_model,
+                    )
                 )
         except Exception:
             self._memory = None
+            logger.warning(
+                "mem0 backend unavailable; memory will use the in-memory fallback", exc_info=True
+            )
 
     async def search(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]:
         if self._memory is None:
             return await self._fallback.search(query, limit=limit)
         try:
             with _quiet_mem0():
-                results = self._memory.search(query, user_id=self.collection, limit=limit)
+                # mem0 v2 rejects top-level entity kwargs on search(); they must
+                # be passed as filters. Passing user_id= here raised ValueError,
+                # which the except below turned into a silent empty result.
+                results = self._memory.search(
+                    query, filters={"user_id": self.collection}, limit=limit
+                )
             if isinstance(results, dict):
                 results = results.get("results") or results.get("memories") or []
             out: list[dict[str, Any]] = []
@@ -250,6 +284,9 @@ class Mem0QdrantMemory:
                     )
             return out
         except Exception:
+            logger.warning(
+                "mem0 search failed; returning empty results from the fallback", exc_info=True
+            )
             return await self._fallback.search(query, limit=limit)
 
     async def add(self, text: str, *, metadata: dict[str, Any] | None = None) -> str:
@@ -262,6 +299,7 @@ class Mem0QdrantMemory:
                 return str(result.get("id") or result.get("memory_id") or uuid.uuid4())
             return str(uuid.uuid4())
         except Exception:
+            logger.warning("mem0 add failed; storing in the in-memory fallback", exc_info=True)
             return await self._fallback.add(text, metadata=metadata)
 
     async def update(self, memory_id: str, text: str) -> None:
@@ -301,15 +339,28 @@ class Mem0QdrantMemory:
 Mem0ChromaMemory = Mem0QdrantMemory
 
 
-def build_memory(*, collection: str, path: Path | None = None) -> Mem0QdrantMemory:
+def build_memory(
+    *,
+    collection: str,
+    path: Path | None = None,
+    llm_model: str | None = None,
+    is_reasoning_model: bool | None = None,
+) -> Mem0QdrantMemory:
     root = (path or (lattice_home() / "qdrant")).resolve()
-    key = (str(root), collection)
+    # Cache on the model as well: mem0 bakes it into the instance, so a profile
+    # with a different auxiliary model must not receive the wrong backend.
+    key = (str(root), collection, llm_model or "")
     with _client_lock:
         existing = _instances.get(key)
         if existing is not None:
             return existing
     # Construct outside the lock (Qdrant/fastembed init is slow; avoid deadlock).
-    inst = Mem0QdrantMemory(collection=collection, path=root)
+    inst = Mem0QdrantMemory(
+        collection=collection,
+        path=root,
+        llm_model=llm_model,
+        is_reasoning_model=is_reasoning_model,
+    )
     with _client_lock:
         existing = _instances.get(key)
         if existing is not None:

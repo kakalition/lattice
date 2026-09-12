@@ -62,6 +62,20 @@ class TelegramConfig(BaseModel):
     tools: ChannelToolsConfig = Field(default_factory=ChannelToolsConfig)
 
 
+class MemoryConfig(BaseModel):
+    """mem0 backend tuning.
+
+    mem0 calls an LLM to extract facts from turns. Reasoning models spend most of
+    the token budget on hidden reasoning, so the non-reasoning parameter set
+    (which sends ``max_tokens``) truncates their JSON and extraction silently
+    yields nothing. mem0 auto-detects only the o1/o3/gpt-5 families, so models
+    like mercury-2.5 need an explicit override.
+    """
+
+    # None = auto-detect from the model name; True/False force the behaviour.
+    is_reasoning_model: bool | None = None
+
+
 class AgentConfig(BaseModel):
     workspace: Path | None = None
     primary_model: str = "openai:gpt-4o"
@@ -125,6 +139,7 @@ class LatticeSettings(BaseSettings):
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     scripts: ScriptsConfig = Field(default_factory=ScriptsConfig)
     sqlite: SqliteConfig = Field(default_factory=SqliteConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     tavily_api_key: str | None = None
     default_profile: str = "default"

@@ -6,15 +6,15 @@ timezone: Asia/Jakarta
 
 agent:
   primary_model: deepseek/deepseek-v4.1-flash
-  secondary_model: inception/mercury-2.5
-  auxiliary_model: inception/mercury-2.5
+  secondary_model: openai/gpt-oss-120b
+  auxiliary_model: openai/gpt-oss-120b
   secondary_max_iterations: 8
   iteration_budget: 40
   hitl_timeout_seconds: 600
   workspace: null
 
 provider:
-  fallback_model: inception/mercury-2.5
+  fallback_model: openai/gpt-oss-120b
 
 tools:
   allow: ["*"]
