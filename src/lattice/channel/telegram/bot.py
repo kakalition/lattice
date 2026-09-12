@@ -64,6 +64,7 @@ class TelegramBot:
             raise RuntimeError("telegram.token not configured")
 
         from telegram import BotCommand, Update
+        from telegram.error import RetryAfter
         from telegram.ext import (
             Application,
             CallbackQueryHandler,
@@ -85,6 +86,40 @@ class TelegramBot:
             await application.bot.set_my_commands([BotCommand(c, d) for c, d in COMMANDS])
 
         app.post_init = _post_init
+
+        async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+            logger.warning("telegram update failed: %s", context.error)
+
+        app.add_error_handler(_on_error)
+
+        def _retry_seconds(exc: RetryAfter) -> float:
+            retry_after = exc.retry_after
+            if hasattr(retry_after, "total_seconds"):
+                return float(retry_after.total_seconds())
+            return float(retry_after)
+
+        async def _flood_safe(call: Callable[[], Awaitable[Any]]) -> Any:
+            """Run a bot call, sleeping through Telegram flood control (up to twice)."""
+            for attempt in range(3):
+                try:
+                    return await call()
+                except RetryAfter as exc:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(_retry_seconds(exc) + 0.5)
+
+        async def _reply(update: Update, text: str, **kwargs: Any) -> Any:
+            message = update.effective_message
+            if message is None:
+                return None
+            return await _flood_safe(
+                lambda text=text, kwargs=kwargs: message.reply_text(text, **kwargs)
+            )
+
+        async def _edit(query: Any, text: str, **kwargs: Any) -> Any:
+            return await _flood_safe(
+                lambda text=text, kwargs=kwargs: query.edit_message_text(text, **kwargs)
+            )
 
         async def _allowed(user_id: int) -> bool:
             allow = self.settings.telegram.allowlist
@@ -112,8 +147,14 @@ class TelegramBot:
                     kwargs["reply_markup"] = markup
                 if edit_message_id and i == 0:
                     try:
-                        await context.bot.edit_message_text(message_id=edit_message_id, **kwargs)
+                        await _flood_safe(
+                            lambda kwargs=kwargs: context.bot.edit_message_text(
+                                message_id=edit_message_id, **kwargs
+                            )
+                        )
                         continue
+                    except RetryAfter:
+                        raise
                     except Exception:
                         plain = {
                             **kwargs,
@@ -121,18 +162,28 @@ class TelegramBot:
                             "parse_mode": None,
                         }
                         try:
-                            await context.bot.edit_message_text(message_id=edit_message_id, **plain)
+                            await _flood_safe(
+                                lambda plain=plain: context.bot.edit_message_text(
+                                    message_id=edit_message_id, **plain
+                                )
+                            )
                             continue
+                        except RetryAfter:
+                            raise
                         except Exception:
                             pass
                 try:
-                    await context.bot.send_message(**kwargs)
+                    await _flood_safe(lambda kwargs=kwargs: context.bot.send_message(**kwargs))
+                except RetryAfter:
+                    raise
                 except Exception:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=plain_chunks[min(i, len(plain_chunks) - 1)],
-                        disable_web_page_preview=True,
-                        reply_markup=kwargs.get("reply_markup"),
+                    await _flood_safe(
+                        lambda i=i, kwargs=kwargs: context.bot.send_message(
+                            chat_id=chat_id,
+                            text=plain_chunks[min(i, len(plain_chunks) - 1)],
+                            disable_web_page_preview=True,
+                            reply_markup=kwargs.get("reply_markup"),
+                        )
                     )
 
         async def _send_for_hitl(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
@@ -149,10 +200,10 @@ class TelegramBot:
                 with open(logo_path(), "rb") as fh:
                     await update.message.reply_photo(photo=fh, caption=caption)
             except Exception:
-                await update.message.reply_text(caption)
+                await _reply(update, caption)
 
         async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            await update.message.reply_text("Commands: " + ", ".join(f"/{c}" for c, _ in COMMANDS))
+            await _reply(update, "Commands: " + ", ".join(f"/{c}" for c, _ in COMMANDS))
 
         async def on_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             uid = update.effective_user.id if update.effective_user else 0
@@ -160,8 +211,8 @@ class TelegramBot:
             ev.set()
             n = self.hitl.cancel_all("cancel")
             self._busy.discard(uid)
-            await update.message.reply_text(
-                f"Stop requested (cleared {n} pending approval(s)). Send a new message."
+            await _reply(
+                update, f"Stop requested (cleared {n} pending approval(s)). Send a new message."
             )
 
         async def on_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -169,25 +220,25 @@ class TelegramBot:
             profile = await self.store.get_sticky_profile("telegram", uid) or "default"
             rows = await self.store.list_sessions(profile_id=profile, user_id=uid, limit=10)
             text = "\n".join(f"{r['id']} {r['updated_at']}" for r in rows) or "(none)"
-            await update.message.reply_text(text)
+            await _reply(update, text)
 
         async def on_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not context.args:
-                await update.message.reply_text("usage: /resume <session_id>")
+                await _reply(update, "usage: /resume <session_id>")
                 return
             uid = update.effective_user.id
             self._sessions[uid] = context.args[0]
-            await update.message.reply_text(f"resumed {context.args[0]}")
+            await _reply(update, f"resumed {context.args[0]}")
 
         async def on_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             args = context.args or []
             if args and args[0].lower() == "remove":
                 if len(args) < 2:
-                    await update.message.reply_text("usage: /profile remove <id>")
+                    await _reply(update, "usage: /profile remove <id>")
                     return
                 pid = args[1].strip()
                 if pid == "default":
-                    await update.message.reply_text("cannot remove the default profile")
+                    await _reply(update, "cannot remove the default profile")
                     return
                 buttons = [
                     {"label": f"Remove {pid}", "data": f"profrmok:{pid}"},
@@ -219,16 +270,16 @@ class TelegramBot:
             args = context.args or []
             if args and args[0].lower() == "clear":
                 await self.store.clear_sticky_primary_model("telegram", uid)
-                await update.message.reply_text("primary model sticky cleared")
+                await _reply(update, "primary model sticky cleared")
                 return
             if args:
                 try:
                     model_id = normalize_primary_model_id(" ".join(args))
                 except ValueError as exc:
-                    await update.message.reply_text(str(exc))
+                    await _reply(update, str(exc))
                     return
                 await self.store.set_sticky_primary_model("telegram", uid, model_id)
-                await update.message.reply_text(f"primary model → {model_id}")
+                await _reply(update, f"primary model → {model_id}")
                 return
             sticky = await self.store.get_sticky_primary_model("telegram", uid)
             pid = await self.store.get_sticky_profile("telegram", uid) or "default"
@@ -242,21 +293,23 @@ class TelegramBot:
                 self.settings, profile_model=profile_model, sticky_model=sticky
             )
             if sticky:
-                await update.message.reply_text(f"{effective} (sticky)")
+                await _reply(update, f"{effective} (sticky)")
             elif profile_model:
-                await update.message.reply_text(f"{effective} (profile {pid})")
+                await _reply(update, f"{effective} (profile {pid})")
             else:
-                await update.message.reply_text(f"{effective} (config)")
+                await _reply(update, f"{effective} (config)")
 
         async def on_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            await update.message.reply_text(
+            await _reply(
+                update,
                 f"allow={self.settings.telegram.tools.allow} "
-                f"deny={self.settings.telegram.tools.deny}"
+                f"deny={self.settings.telegram.tools.deny}",
             )
 
         async def on_forget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            await update.message.reply_text(
-                "Use the memory_forget tool in chat, or pass an id: /forget <id> (wired via turn)."
+            await _reply(
+                update,
+                "Use the memory_forget tool in chat, or pass an id: /forget <id> (wired via turn).",
             )
 
         async def _profile_file_cmd(
@@ -282,14 +335,12 @@ class TelegramBot:
                 current = read(pid, self.settings.home).strip() or "(empty)"
                 if len(current) > 3500:
                     current = current[:3500] + "…"
-                await update.message.reply_text(f"{noun} for profile {pid}:\n\n{current}")
+                await _reply(update, f"{noun} for profile {pid}:\n\n{current}")
                 return
 
             if low in {"reset", "default"}:
                 reset(pid, self.settings.home)
-                await update.message.reply_text(
-                    f"{noun} reset to the built-in default for profile {pid}."
-                )
+                await _reply(update, f"{noun} reset to the built-in default for profile {pid}.")
                 return
 
             for prefix in ("set ", "edit "):
@@ -298,17 +349,18 @@ class TelegramBot:
                     try:
                         write(pid, content, self.settings.home)
                     except (FileNotFoundError, ValueError) as exc:
-                        await update.message.reply_text(str(exc))
+                        await _reply(update, str(exc))
                         return
-                    await update.message.reply_text(
-                        f"{noun} updated for profile {pid} — active on your next message."
+                    await _reply(
+                        update, f"{noun} updated for profile {pid} — active on your next message."
                     )
                     return
 
-            await update.message.reply_text(
+            await _reply(
+                update,
                 f"usage:\n/{noun} — show current\n"
                 f"/{noun} set <text> — replace it\n"
-                f"/{noun} reset — restore the built-in default"
+                f"/{noun} reset — restore the built-in default",
             )
 
         async def on_soul(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -360,19 +412,26 @@ class TelegramBot:
                 chat_id = update.effective_chat.id if update.effective_chat else None
                 if ok and chat_id is not None:
                     with contextlib.suppress(Exception):
-                        await context.bot.send_message(chat_id=chat_id, text=label)
+                        await _flood_safe(
+                            lambda: context.bot.send_message(chat_id=chat_id, text=label)
+                        )
                     with contextlib.suppress(Exception):
-                        await query.edit_message_reply_markup(reply_markup=None)
+                        await _flood_safe(
+                            lambda: query.edit_message_reply_markup(reply_markup=None)
+                        )
                 elif not ok and chat_id is not None:
                     with contextlib.suppress(Exception):
-                        await context.bot.send_message(
-                            chat_id=chat_id, text="That approval expired — send a new message."
+                        await _flood_safe(
+                            lambda: context.bot.send_message(
+                                chat_id=chat_id,
+                                text="That approval expired — send a new message.",
+                            )
                         )
                 return
             await query.answer()
             if data == "profrmno":
                 with contextlib.suppress(Exception):
-                    await query.edit_message_text("remove cancelled")
+                    await _edit(query, "remove cancelled")
                 return
             if data.startswith("profrmok:"):
                 pid = data.split(":", 1)[1]
@@ -384,16 +443,16 @@ class TelegramBot:
                     if sticky == pid:
                         await self.store.set_sticky_profile("telegram", str(uid), "default")
                     self._sessions.pop(uid, None)
-                    await query.edit_message_text(f"removed profile {pid}")
+                    await _edit(query, f"removed profile {pid}")
                 except (ValueError, FileNotFoundError) as exc:
-                    await query.edit_message_text(f"remove failed: {exc}")
+                    await _edit(query, f"remove failed: {exc}")
                 return
             if data.startswith("profile:"):
                 profile_id = data.split(":", 1)[1]
                 uid = str(query.from_user.id)
                 await self.store.set_sticky_profile("telegram", uid, profile_id)
                 self._sessions.pop(query.from_user.id, None)
-                await query.edit_message_text(f"profile → {profile_id} (new session)")
+                await _edit(query, f"profile → {profile_id} (new session)")
 
         async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not update.message or not update.effective_user:
@@ -433,14 +492,14 @@ class TelegramBot:
                 # not start a queued turn that never runs.
                 if self.hitl.resolve_text(str(uid), text):
                     with contextlib.suppress(Exception):
-                        await update.message.reply_text(warm_confirmation("ok") or "ok")
+                        await _reply(update, warm_confirmation("ok") or "ok")
                     return
                 q = self._queues.setdefault(uid, asyncio.Queue(maxsize=self.settings.queue_depth))
                 try:
                     q.put_nowait(text)
-                    await update.message.reply_text("queued")
+                    await _reply(update, "queued")
                 except asyncio.QueueFull:
-                    await update.message.reply_text("queue full")
+                    await _reply(update, "queue full")
                 return
 
             async def _run_turn(turn_text: str, paths: list[Path]) -> None:
@@ -453,7 +512,7 @@ class TelegramBot:
                 with contextlib.suppress(Exception):
                     await update.message.set_reaction("👀")
                 opening = idle_phrase(0)
-                status = await update.message.reply_text(opening)
+                status = await _reply(update, opening)
                 sticky = await self.store.get_sticky_profile("telegram", str(uid)) or "default"
                 self.hitl.set_active_user(str(uid))
                 self.hitl.bind_send(await _send_for_hitl(context, chat_id))
@@ -473,18 +532,22 @@ class TelegramBot:
                             return
                         self._last = text
                         try:
-                            await context.bot.edit_message_text(
-                                chat_id=chat_id,
-                                message_id=status.message_id,
-                                text=markdown_to_telegram_html(text),
-                                parse_mode="HTML",
+                            await _flood_safe(
+                                lambda: context.bot.edit_message_text(
+                                    chat_id=chat_id,
+                                    message_id=status.message_id,
+                                    text=markdown_to_telegram_html(text),
+                                    parse_mode="HTML",
+                                )
                             )
                         except Exception:
                             with contextlib.suppress(Exception):
-                                await context.bot.edit_message_text(
-                                    chat_id=chat_id,
-                                    message_id=status.message_id,
-                                    text=text,
+                                await _flood_safe(
+                                    lambda: context.bot.edit_message_text(
+                                        chat_id=chat_id,
+                                        message_id=status.message_id,
+                                        text=text,
+                                    )
                                 )
 
                 stop_typing = asyncio.Event()
