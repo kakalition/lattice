@@ -104,6 +104,24 @@ def test_shell_approval_patterns() -> None:
     assert not tool_needs_approval(
         "sqlite_execute", args={"name": "finances", "sql": "CREATE TABLE t (id INT)"}
     )
+    assert not tool_needs_approval(
+        "sqlite_execute", args={"name": "finances", "sql": "UPDATE t SET amount = 5"}
+    )
+    # Everyday finance upserts and row-level deletes must not interrupt the turn.
+    assert not tool_needs_approval(
+        "sqlite_execute",
+        args={
+            "name": "finances",
+            "sql": "INSERT OR REPLACE INTO budgets (month, total) VALUES (9, 100)",
+        },
+    )
+    assert not tool_needs_approval(
+        "sqlite_execute", args={"name": "finances", "sql": "DELETE FROM t WHERE id = 7"}
+    )
+    # Keywords appearing inside string literals are data, not statements.
+    assert not sql_needs_approval("UPDATE t SET name = 'ALTER EGO' WHERE id = 1")
+    assert not sql_needs_approval("-- DROP TABLE t\nSELECT 1")
+    # Catastrophic / structural ops still gate.
     assert tool_needs_approval(
         "sqlite_execute", args={"name": "finances", "sql": "DELETE FROM t"}
     )
@@ -111,6 +129,7 @@ def test_shell_approval_patterns() -> None:
         "sqlite_execute", args={"name": "finances", "sql": "DROP TABLE t"}
     )
     assert sql_needs_approval("ALTER TABLE t ADD COLUMN x INT")
+    assert sql_needs_approval("ATTACH DATABASE '/tmp/x.db' AS x")
     assert not tool_needs_approval("read_file")
 
 

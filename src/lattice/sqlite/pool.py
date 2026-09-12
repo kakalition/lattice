@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
+from lattice.sqlite.pragmas import apply_perf_pragmas
 from lattice.sqlite.registry import DbEntry, SqliteRegistry
 
 
@@ -18,7 +19,10 @@ class SqlitePool:
         entry = self.registry.get(name, allow=allow)
         if name not in self._conns:
             conn = await aiosqlite.connect(entry.path)
-            await conn.execute("PRAGMA journal_mode=WAL")
+            cfg = self.registry.settings.sqlite
+            await apply_perf_pragmas(
+                conn, mmap_size=cfg.mmap_size_bytes, busy_timeout_ms=cfg.busy_timeout_ms
+            )
             self._conns[name] = conn
         return entry, self._conns[name]
 

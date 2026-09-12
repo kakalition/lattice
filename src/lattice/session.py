@@ -12,6 +12,7 @@ from typing import Any
 import aiosqlite
 
 from lattice.paths import lattice_home
+from lattice.sqlite.pragmas import apply_perf_pragmas
 
 _LOCK = asyncio.Lock()
 
@@ -23,7 +24,7 @@ class SessionStore:
     async def connect(self) -> aiosqlite.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(self.db_path)
-        await conn.execute("PRAGMA journal_mode=WAL")
+        await apply_perf_pragmas(conn)
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (

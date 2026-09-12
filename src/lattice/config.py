@@ -28,6 +28,9 @@ class SqliteConfig(BaseModel):
     databases: dict[str, SqliteDatabaseConfig] = Field(default_factory=dict)
     query_row_limit: int = 500
     query_timeout_ms: int = 5000
+    # Connection tuning applied on every connect (see sqlite/pragmas.py).
+    busy_timeout_ms: int = 5000
+    mmap_size_bytes: int = 30_000_000_000
 
 
 class ToolsConfig(BaseModel):
@@ -292,6 +295,8 @@ sqlite:
   databases: {}
   query_row_limit: 500
   query_timeout_ms: 5000
+  busy_timeout_ms: 5000
+  mmap_size_bytes: 30000000000
 
 telegram:
   tools:

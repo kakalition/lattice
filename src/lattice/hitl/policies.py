@@ -28,12 +28,13 @@ DANGEROUS_SHELL_PATTERNS = (
     re.compile(r"\b(?:chmod|chown)\b[^\n;|&]*\s/(?:\s|$)", re.I),
 )
 
-# SQL that destroys or restructures data (INSERT/CREATE/UPDATE do not gate).
-DESTRUCTIVE_SQL_PATTERNS = (
-    re.compile(
-        r"\b(?:DROP|DELETE|ALTER|TRUNCATE|REPLACE|ATTACH|DETACH)\b",
-        re.I,
-    ),
+# SQL that destroys or restructures data. Everyday DML (INSERT/UPDATE, including
+# upserts and row-level DELETE) does not gate; only unrecoverable/structural ops do.
+_CATASTROPHIC_SQL_PATTERNS = (
+    re.compile(r"\b(?:DROP|ALTER|TRUNCATE)\b", re.I),
+    re.compile(r"\bATTACH\b", re.I),
+    # DELETE without a WHERE clause wipes the whole table.
+    re.compile(r"\bDELETE\s+FROM\b(?![^;]*\bWHERE\b)", re.I | re.S),
 )
 
 # execute_script HITL — high-blast-radius ops / host escape / network / eval.
@@ -70,8 +71,46 @@ def shell_needs_approval(command: str) -> bool:
     return any(p.search(command) for p in DANGEROUS_SHELL_PATTERNS)
 
 
+def _strip_sql_literals(sql: str) -> str:
+    """Remove string/identifier literals so keywords inside data don't trigger the gate.
+
+    e.g. ``UPDATE t SET name = 'ALTER EGO'`` is ordinary DML, not an ``ALTER``.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in "'\"`":  # string or quoted identifier
+            quote = ch
+            i += 1
+            while i < n:
+                if sql[i] == quote:
+                    if i + 1 < n and sql[i + 1] == quote:  # doubled = escaped
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            out.append(" ")
+            continue
+        if ch == "-" and sql.startswith("--", i):  # line comment
+            end = sql.find("\n", i)
+            i = n if end == -1 else end
+            out.append(" ")
+            continue
+        if ch == "/" and sql.startswith("/*", i):  # block comment
+            end = sql.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            out.append(" ")
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def sql_needs_approval(sql: str) -> bool:
-    return any(p.search(sql) for p in DESTRUCTIVE_SQL_PATTERNS)
+    return any(p.search(_strip_sql_literals(sql)) for p in _CATASTROPHIC_SQL_PATTERNS)
 
 
 def script_needs_approval(code: str, *, language: str | None = None) -> bool:

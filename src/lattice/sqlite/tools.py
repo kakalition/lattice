@@ -15,6 +15,75 @@ _WRITE_RE = re.compile(
     re.I,
 )
 
+# Statements that manage their own transaction or are illegal inside one
+# (VACUUM/PRAGMA/ATTACH); batching these in BEGIN…COMMIT would raise.
+_SELF_TXN_RE = re.compile(
+    r"^\s*(?:VACUUM|PRAGMA|ATTACH|DETACH)\b"
+    r"|\b(?:BEGIN|COMMIT|ROLLBACK|SAVEPOINT|RELEASE)\b",
+    re.I,
+)
+
+
+def _split_statements(sql: str) -> list[str]:
+    """Split a SQL script on statement boundaries (``;``).
+
+    Semicolons inside string literals, quoted identifiers, and comments do not
+    split, so ``INSERT INTO t VALUES ('a;b')`` stays one statement.
+    """
+    stmts: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in "'\"`":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            while i < n:
+                c = sql[i]
+                buf.append(c)
+                if c == quote:
+                    if i + 1 < n and sql[i + 1] == quote:  # doubled = escaped
+                        buf.append(sql[i + 1])
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "-" and sql.startswith("--", i):
+            end = sql.find("\n", i)
+            if end == -1:
+                buf.append(sql[i:])
+                i = n
+            else:
+                buf.append(sql[i : end + 1])
+                i = end + 1
+            continue
+        if ch == "/" and sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end == -1:
+                buf.append(sql[i:])
+                i = n
+            else:
+                buf.append(sql[i : end + 2])
+                i = end + 2
+            continue
+        if ch == ";":
+            stmt = "".join(buf).strip()
+            if stmt:
+                stmts.append(stmt)
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        stmts.append(tail)
+    return stmts
+
 
 async def sqlite_list(registry: SqliteRegistry, allow: list[str] | None = None) -> str:
     rows = registry.list(allow)
@@ -70,6 +139,24 @@ async def sqlite_execute(
         raise PermissionError(f"database {name} is read_only")
     if dry_run:
         return f"dry-run ok: {sql[:200]}"
+
+    stmts = _split_statements(sql)
+    if len(stmts) > 1 and not _SELF_TXN_RE.search(sql):
+        # Bulk write: one explicit transaction means a single commit/fsync for the
+        # whole batch instead of one per statement.
+        await conn.execute("BEGIN")
+        try:
+            for stmt in stmts:
+                await conn.execute(stmt)
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+        return f"ok ({len(stmts)} statements, 1 transaction)"
+    if len(stmts) > 1:
+        # Self-managed (VACUUM/PRAGMA/ATTACH/DETACH or explicit BEGIN…COMMIT).
+        await conn.executescript(sql)
+        return "ok (script)"
     await conn.execute(sql)
     await conn.commit()
     return "ok"

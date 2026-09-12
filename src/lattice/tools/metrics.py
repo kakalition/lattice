@@ -11,6 +11,7 @@ from typing import Any
 import aiosqlite
 
 from lattice.paths import lattice_home
+from lattice.sqlite.pragmas import apply_perf_pragmas
 
 _NAME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_\-./]{0,63}$")
 
@@ -59,6 +60,7 @@ def _day(iso: str) -> date:
 async def _connect(home: Path | None = None) -> aiosqlite.Connection:
     path = metrics_db_path(home)
     conn = await aiosqlite.connect(path)
+    await apply_perf_pragmas(conn)
     await conn.executescript(_SCHEMA)
     await conn.commit()
     return conn
