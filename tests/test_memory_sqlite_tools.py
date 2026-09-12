@@ -62,6 +62,32 @@ async def test_sqlite_tools(tmp_path: Path) -> None:
     await pool2.close_all()
 
 
+def test_relative_register_prefers_existing_workspace_file(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ledger = workspace / "finance.db"
+    ledger.write_bytes(b"")
+    settings = LatticeSettings(home=tmp_path)
+    reg = SqliteRegistry(settings, workspace=workspace)
+
+    entry = reg.register("finance", "finance.db")
+
+    assert entry.path == ledger.resolve()
+    assert entry.created is False
+
+
+def test_unknown_relative_register_falls_back_to_home_sqlite(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    settings = LatticeSettings(home=tmp_path)
+    reg = SqliteRegistry(settings, workspace=workspace)
+
+    entry = reg.register("fresh", "fresh.db")
+
+    assert entry.path == (tmp_path / "sqlite" / "fresh.db").resolve()
+    assert entry.created is True
+
+
 @pytest.mark.asyncio
 async def test_sqlite_pragmas_applied_on_connect(tmp_path: Path) -> None:
     from lattice.sqlite.pragmas import read_pragmas

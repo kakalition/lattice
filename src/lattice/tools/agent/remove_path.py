@@ -7,8 +7,9 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, maybe_approve, traced
-from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.agent._common import ToolsetT, ToolTier
 from lattice.tools.files import remove_path as _remove_path
+from lattice.tools.files import validate_removal
 
 TIER = ToolTier.EAGER
 
@@ -26,6 +27,16 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
         Deleting a non-empty directory requires recursive=True. Removal is
         approval-gated; symlinks are removed as links and never followed.
         """
+        # Validate first: never prompt for an operation that cannot run.
+        error = validate_removal(
+            path,
+            workspace=ctx.deps.workspace,
+            home=ctx.deps.settings.home,
+            recursive=recursive,
+            missing_ok=missing_ok,
+        )
+        if error is not None:
+            return error
         denied = await maybe_approve(
             ctx,
             "remove_path",

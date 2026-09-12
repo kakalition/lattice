@@ -37,8 +37,7 @@ def list_profiles(home: Path | None = None) -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.is_dir() and (p / "profile.yaml").exists())
 
 
-def remove_profile(profile_id: str, home: Path | None = None) -> Path:
-    """Delete profiles/<id>/ under lattice home. Refuses `default` and unknown ids."""
+def _profile_removal_target(profile_id: str, home: Path | None) -> tuple[str, Path]:
     pid = validate_profile_id(profile_id)
     if pid == "default":
         raise ValueError("cannot remove the default profile")
@@ -51,6 +50,24 @@ def remove_profile(profile_id: str, home: Path | None = None) -> Path:
         raise ValueError("invalid profile path") from exc
     if not target.is_dir() or not (target / "profile.yaml").is_file():
         raise FileNotFoundError(f"profile not found: {pid}")
+    return pid, target
+
+
+def validate_removable_profile(profile_id: str, home: Path | None = None) -> str | None:
+    """Return a user-facing error if a profile cannot be removed, else ``None``.
+
+    Used before HITL so an invalid/unremovable id never triggers a prompt.
+    """
+    try:
+        _profile_removal_target(profile_id, home)
+    except (ValueError, FileNotFoundError) as exc:
+        return f"error: {exc}"
+    return None
+
+
+def remove_profile(profile_id: str, home: Path | None = None) -> Path:
+    """Delete profiles/<id>/ under lattice home. Refuses `default` and unknown ids."""
+    _, target = _profile_removal_target(profile_id, home)
     shutil.rmtree(target)
     return target
 

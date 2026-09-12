@@ -7,7 +7,7 @@ import os
 import shutil
 from pathlib import Path
 
-from lattice.tools.file_safety import is_denied_path, resolve_agent_path
+from lattice.tools.file_safety import PathDeniedError, is_denied_path, resolve_agent_path
 
 # Never removable, regardless of jail membership: filesystem roots and the
 # agent's own runtime state. ``is_denied_path`` only covers secrets.
@@ -55,6 +55,40 @@ def _resolve_for_removal(path: str, *, workspace: Path, home: Path | None) -> Pa
     if is_denied_path(candidate):
         raise PathRemovalDenied(f"path denied: {candidate}")
     return candidate
+
+
+def validate_removal(
+    path: str,
+    *,
+    workspace: Path,
+    home: Path | None = None,
+    recursive: bool = False,
+    missing_ok: bool = False,
+) -> str | None:
+    """Return a user-facing error if the removal cannot proceed, else ``None``.
+
+    Runs the jail / protected-path checks before HITL so an out-of-jail or
+    otherwise invalid target never triggers a futile approval prompt.
+    """
+    try:
+        target = _resolve_for_removal(path, workspace=workspace, home=home)
+        _assert_removable(target, workspace=workspace, home=home)
+    except (PathDeniedError, PathRemovalDenied, OSError) as exc:
+        return f"error: {exc}"
+    try:
+        os.lstat(target)
+    except FileNotFoundError:
+        return None if missing_ok else f"error: nothing to remove: {target}"
+    except OSError as exc:
+        return f"error: {exc}"
+    if not os.path.islink(target) and os.path.isdir(target) and not recursive:
+        try:
+            with os.scandir(target) as entries:
+                if any(True for _ in entries):
+                    return f"error: directory not empty: {target} (pass recursive=True to remove)"
+        except OSError as exc:
+            return f"error: {exc}"
+    return None
 
 
 def _count_entries(target: Path) -> int:

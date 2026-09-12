@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.messages import PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
 
@@ -23,8 +28,10 @@ from lattice.context import PressureConfig, compress
 from lattice.events import NullTurnEvents, TurnEvents
 from lattice.hitl import AutoApproveHitl, HitlPort
 from lattice.mcp import McpHostManager
+from lattice.memory.worker import enqueue_sync
 from lattice.models import Inbound, Outbound
 from lattice.profiles import get_profile
+from lattice.prompt import build_runtime_notice
 from lattice.providers import (
     Summarizer,
     build_openai_model,
@@ -43,6 +50,7 @@ from lattice.session import SessionStore, sanitize_messages
 from lattice.session_history import session_dicts_to_history
 from lattice.skills import scan_skills_for, skill_index_entries
 from lattice.sqlite import SqlitePool, SqliteRegistry
+from lattice.timeutil import resolve_timezone
 from lattice.tools.deadline import with_deadline
 from lattice.tools.user_tools import scan_user_tools
 from lattice.turn_trace import LoggingTurnEvents, new_turn_id
@@ -50,6 +58,69 @@ from lattice.turn_trace import LoggingTurnEvents, new_turn_id
 
 class TurnCancelled(Exception):
     pass
+
+
+# Files the agent produces during a turn that should reach the channel even when
+# they were written by a script/shell rather than generate_chart/generate_pdf.
+MEDIA_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf", ".svg"})
+_MEDIA_SKIP_DIRS = frozenset(
+    {"inbound", ".git", "__pycache__", "node_modules", ".run", ".cache", ".venv"}
+)
+_MEDIA_MAX_FILES = 6
+_MEDIA_MAX_BYTES = 25 * 1024 * 1024
+# mtime can land a hair before turn_start on coarse filesystems.
+_MEDIA_MTIME_SLACK = 1.0
+
+
+def snapshot_media(workspace: Path) -> set[Path]:
+    """Absolute media paths present under the workspace before a turn runs."""
+    found: set[Path] = set()
+    for root, dirs, files in os.walk(workspace):
+        dirs[:] = [d for d in dirs if d not in _MEDIA_SKIP_DIRS]
+        for name in files:
+            if Path(name).suffix.lower() in MEDIA_EXTS:
+                resolved = _safe_resolve(Path(root) / name)
+                if resolved is not None:
+                    found.add(resolved)
+    return found
+
+
+def _safe_resolve(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def discover_turn_media(
+    workspace: Path,
+    *,
+    turn_start: float,
+    before: set[Path],
+    existing: set[Path],
+) -> list[Path]:
+    """Workspace media created during the turn: deduped, bounded, oldest first."""
+    candidates: list[tuple[float, Path]] = []
+    for root, dirs, files in os.walk(workspace):
+        dirs[:] = [d for d in dirs if d not in _MEDIA_SKIP_DIRS]
+        for name in files:
+            path = Path(root) / name
+            if path.suffix.lower() not in MEDIA_EXTS:
+                continue
+            resolved = _safe_resolve(path)
+            if resolved is None or resolved in before or resolved in existing:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if stat.st_mtime < turn_start - _MEDIA_MTIME_SLACK:
+                continue
+            if stat.st_size > _MEDIA_MAX_BYTES:
+                continue
+            candidates.append((stat.st_mtime, resolved))
+    candidates.sort(key=lambda item: item[0])
+    return [path for _, path in candidates[:_MEDIA_MAX_FILES]]
 
 
 def _provider_error_text(exc: BaseException) -> str:
@@ -151,7 +222,7 @@ async def run_turn(
     if pressure.is_over_pressure(messages):
         await events.on_status("compressing context")
         with trace.timed("compress"):
-            await memory.sync_turn(messages)
+            enqueue_sync(memory, messages, turn_id=turn_id)
             aux = Summarizer(settings, primary_id)
             result = await compress(
                 messages,
@@ -170,11 +241,26 @@ async def run_turn(
             )
             messages = result.messages
 
+    registry = SqliteRegistry(settings, workspace=workspace)
+    pool = SqlitePool(registry)
+    tz_name = resolve_timezone(settings.home, explicit=settings.timezone)
+    try:
+        now = datetime.now(ZoneInfo(tz_name)).isoformat(timespec="minutes")
+    except Exception:
+        now = datetime.now().astimezone().isoformat(timespec="minutes")
+    notices.append(
+        build_runtime_notice(
+            workspace=str(workspace),
+            now=now,
+            timezone=tz_name,
+            databases=[(d.name, str(d.path)) for d in registry.list()],
+            profile_id=profile.id,
+            preferred_skills=list(profile.skills_prefer),
+            user_tools=[spec.name for spec in user_specs],
+        )
+    )
     prompt = build_prompt_bundle(profile, entries, notices)
     system_prompt = prompt.stable_system_prompt()
-
-    registry = SqliteRegistry(settings)
-    pool = SqlitePool(registry)
     enabled = resolve_enabled_tools(
         settings,
         profile,
@@ -252,12 +338,23 @@ async def run_turn(
         model_settings=cache_settings,
     )
 
+    async def _on_stream(_ctx: Any, stream: Any) -> None:
+        async for event in stream:
+            if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                if event.part.content:
+                    await events.on_stream_delta(event.part.content)
+            elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+                delta = event.delta.content_delta
+                if delta:
+                    await events.on_stream_delta(delta)
+
     async def _run_once() -> tuple[str, RunUsage]:
         result = await agent.run(
             run_user_prompt,
             deps=deps,
             message_history=history or None,
             usage_limits=UsageLimits(request_limit=settings.agent.iteration_budget),
+            event_stream_handler=_on_stream,
         )
         return str(result.output), result.usage
 
@@ -271,6 +368,8 @@ async def run_turn(
         return usage_to_dict(usage, model=primary_id)
 
     usage_payload = _usage_payload()
+    media_before = snapshot_media(workspace)
+    turn_start = time.time()
     try:
         with trace.timed("executor"):
             await events.on_status("thinking")
@@ -290,9 +389,10 @@ async def run_turn(
                 except Exception as exc:
                     if isinstance(exc, UsageLimitExceeded):
                         text = (
-                            f"I reached this turn's step budget "
-                            f"({settings.agent.iteration_budget}) before finishing. "
-                            "Ask me to continue and I'll pick up from here."
+                            f"I reached this turn's request budget "
+                            f"({settings.agent.iteration_budget} model requests) "
+                            "before finishing. Ask me to continue and I'll pick up "
+                            "from here."
                         )
                         err = str(exc)
                         break
@@ -303,7 +403,7 @@ async def run_turn(
                         retries += 1
                         continue
                     if action == "compress":
-                        await memory.sync_turn(messages)
+                        enqueue_sync(memory, messages, turn_id=turn_id)
                         aux = Summarizer(settings, primary_id)
                         result = await compress(
                             messages,
@@ -328,8 +428,7 @@ async def run_turn(
             messages.append({"role": "assistant", "content": text})
             usage_payload = _usage_payload()
             await store.save_messages(session_id, messages, usage=usage_payload)
-            with trace.timed("memory_sync"):
-                await memory.sync_turn(messages[-4:])
+            enqueue_sync(memory, messages[-4:], turn_id=turn_id)
         await pool.close_all()
         trace.log_end(
             outbound_text=text or "",
@@ -338,8 +437,13 @@ async def run_turn(
             timings=trace.phases,
         )
 
-    await events.on_stream_delta(text)
     media = [p for p in deps.outbound_media if p.exists()]
+    existing = {p.resolve() for p in media}
+    media.extend(
+        discover_turn_media(
+            workspace, turn_start=turn_start, before=media_before, existing=existing
+        )
+    )
     return Outbound(
         text=text,
         session_id=session_id,

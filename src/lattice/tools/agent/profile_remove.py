@@ -8,8 +8,8 @@ from pydantic_ai import RunContext
 
 from lattice.audit import audit_log
 from lattice.deps import TurnDeps, maybe_approve, traced
-from lattice.profiles.store import remove_profile
-from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.profiles.store import remove_profile, validate_removable_profile
+from lattice.tools.agent._common import ToolsetT, ToolTier
 
 TIER = ToolTier.COLD
 
@@ -17,6 +17,10 @@ TIER = ToolTier.COLD
 def register(toolset: ToolsetT) -> dict[str, Any]:
     @toolset.tool
     async def profile_remove(ctx: RunContext[TurnDeps], profile_id: str) -> str:
+        # Validate first so an invalid or protected id errors instead of prompting.
+        error = validate_removable_profile(profile_id, ctx.deps.settings.home)
+        if error is not None:
+            return error
         denied = await maybe_approve(
             ctx, "profile_remove", f"remove profile {profile_id}", profile_id=profile_id
         )

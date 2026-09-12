@@ -89,7 +89,7 @@ class MemoryConfig(BaseModel):
 class AgentConfig(BaseModel):
     workspace: Path | None = None
     primary_model: str = "openai:gpt-4o"
-    iteration_budget: int = 40
+    iteration_budget: int = 60
     hitl_timeout_seconds: int = 600
     context_pressure_ratio: float = 0.5
     protect_last_n: int = 20
@@ -296,7 +296,7 @@ timezone: Asia/Jakarta
 
 agent:
   primary_model: deepseek/deepseek-v4.1-flash
-  iteration_budget: 40
+  iteration_budget: 60
   hitl_timeout_seconds: 600
   workspace: null
   # Explicit prompt caching for OpenRouter Anthropic/Gemini models.

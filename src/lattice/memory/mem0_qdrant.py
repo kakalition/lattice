@@ -40,6 +40,9 @@ _clients_closed = False
 def close_memory() -> None:
     """Release embedded Qdrant clients while the interpreter is still usable.
 
+    Pending background memory writes are drained first so a shutdown after the
+    reply does not drop the last turn.
+
     ``QdrantClient.__del__`` calls ``close()``, which lazily imports
     ``portalocker`` and closes per-collection storage. If that runs during
     interpreter finalisation it raises ``ImportError: sys.meta_path is None``
@@ -49,6 +52,14 @@ def close_memory() -> None:
     so a following process can open the same store. Safe to call more than once.
     """
     global _clients_closed
+    with _client_lock:
+        if _clients_closed:
+            return
+    # Drain queued turn writes before the clients they depend on are closed.
+    with suppress(Exception):
+        from lattice.memory.worker import drain_memory_sync
+
+        drain_memory_sync()
     with _client_lock:
         if _clients_closed:
             return
@@ -451,8 +462,6 @@ def build_memory(
         existing = _instances.get(key)
         if existing is not None:
             return existing
-        _instances[key] = inst
-        return inst
         _instances[key] = inst
         return inst
 

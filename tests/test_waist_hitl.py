@@ -172,6 +172,36 @@ async def test_run_turn_with_test_model(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_turn_streams_partial_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_home(tmp_path)
+    settings = LatticeSettings(home=tmp_path)
+    settings.agent.workspace = tmp_path / "ws"
+    monkeypatch.setattr(
+        "lattice.turn.build_memory_for_profile", lambda *a, **k: InMemoryMemory("t")
+    )
+    from lattice.channel.live_status import LiveTurnEvents, bind_live_events
+
+    seen: list[str] = []
+
+    class Sink:
+        async def set_status(self, text: str) -> None:
+            seen.append(text)
+
+    live = LiveTurnEvents(Sink(), min_interval_s=0.0, phrase_interval_s=10.0)
+    async with bind_live_events(live):
+        out = await run_turn(
+            Inbound(text="hello", profile_id="default", channel="cli"),
+            settings=settings,
+            model=TestModel(call_tools=[], custom_output_text="streamed reply"),
+        )
+    assert out.text == "streamed reply"
+    assert live._stream_text == "streamed reply"
+    assert any("streamed reply" in line for line in seen)
+
+
+@pytest.mark.asyncio
 async def test_run_turn_cancel_flag(tmp_path: Path) -> None:
     init_home(tmp_path)
     settings = LatticeSettings(home=tmp_path)

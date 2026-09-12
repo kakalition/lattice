@@ -95,7 +95,7 @@ class TurnDeps(BaseModel):
     outbound_media: list[Path] = Field(default_factory=list)
 
 
-def truncate_result(text: str, limit: int = 30_000) -> str:
+def truncate_result(text: str, limit: int = 12_000) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "\n[truncated]"

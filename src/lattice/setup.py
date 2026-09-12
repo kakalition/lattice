@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
+import logging
 from pathlib import Path
 
 from lattice.config import default_config_yaml, load_settings
@@ -596,6 +600,114 @@ Run through `execute_script` with `language="python"`:
 }
 
 
+logger = logging.getLogger("lattice.setup")
+
+BUNDLED_MANIFEST = ".bundled.json"
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _bundled_files(
+    *,
+    assets_dir: Path | None = None,
+    starters: dict[str, tuple[str, str]] | None = None,
+) -> dict[str, bytes]:
+    """Every file the package ships into ``home/skills``: rel path -> bytes."""
+    starters = SKILL_STARTERS if starters is None else starters
+    assets_dir = ASSETS_SKILLS if assets_dir is None else assets_dir
+    files: dict[str, bytes] = {
+        f"{name}/SKILL.md": body.encode("utf-8") for name, (_desc, body) in starters.items()
+    }
+    if assets_dir.is_dir():
+        for src in sorted(assets_dir.rglob("*")):
+            if not src.is_file() or "__pycache__" in src.parts:
+                continue
+            try:
+                rel = src.relative_to(assets_dir)
+            except ValueError:
+                continue
+            files[str(rel)] = src.read_bytes()
+    return files
+
+
+def _load_bundled_manifest(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def refresh_bundled_skills(
+    home: Path | None = None,
+    *,
+    assets_dir: Path | None = None,
+    starters: dict[str, tuple[str, str]] | None = None,
+    manifest_path: Path | None = None,
+) -> list[str]:
+    """Update bundled skill files on an existing home without clobbering edits.
+
+    The manifest records the hash of the last *shipped* content installed. A file
+    whose current hash matches that is unmodified and safe to refresh; one that
+    differs is operator-edited and is left alone. On a home with no manifest the
+    bundled files are adopted (with a ``.bundled.bak`` backup) so stale bundled
+    skills can be fixed. Returns the relative paths refreshed.
+    """
+    root = (home or lattice_home()) / "skills"
+    files = _bundled_files(assets_dir=assets_dir, starters=starters)
+    if not files:
+        return []
+    manifest_file = manifest_path or (root / BUNDLED_MANIFEST)
+    manifest = _load_bundled_manifest(manifest_file)
+    updated: list[str] = []
+    for rel, data in sorted(files.items()):
+        dest = root / rel
+        shipped_hash = _sha256(data)
+        if not dest.exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            if dest.suffix in (".py", ".sh"):
+                dest.chmod(0o700)
+            manifest[rel] = shipped_hash
+            updated.append(rel)
+            continue
+        try:
+            current_hash = _sha256(dest.read_bytes())
+        except OSError:
+            continue
+        if current_hash == shipped_hash:
+            manifest[rel] = shipped_hash
+            continue
+        last_shipped = manifest.get(rel)
+        if last_shipped is not None and current_hash != last_shipped:
+            logger.info("skill asset edited locally; keeping %s", dest)
+            manifest[rel] = shipped_hash
+            continue
+        # Safe refresh: either the on-disk matches the last shipped hash, or this
+        # home predates the manifest (adopt, but keep a backup).
+        with contextlib.suppress(OSError):
+            dest.with_suffix(dest.suffix + ".bundled.bak").write_bytes(dest.read_bytes())
+        dest.write_bytes(data)
+        if dest.suffix in (".py", ".sh"):
+            dest.chmod(0o700)
+        manifest[rel] = shipped_hash
+        updated.append(rel)
+    try:
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    except OSError:
+        logger.warning("could not write bundled skill manifest %s", manifest_file, exc_info=True)
+    return updated
+
+
 def write_skill_starters(home: Path | None = None) -> None:
     root = (home or lattice_home()) / "skills"
     for name, (_desc, body) in SKILL_STARTERS.items():
@@ -681,6 +793,9 @@ def init_home(home: Path | None = None) -> Path:
     ensure_default_profile(root)
     write_skill_starters(root)
     seed_skill_scripts(root)
+    refreshed = refresh_bundled_skills(root)
+    if refreshed:
+        logger.info("refreshed %d bundled skill asset(s)", len(refreshed))
     from lattice.timeutil import ensure_timezone
 
     ensure_timezone(root if home is not None else None)

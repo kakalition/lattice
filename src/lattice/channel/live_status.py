@@ -13,7 +13,7 @@ import re
 import shlex
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from typing import Any, Protocol
 
@@ -625,6 +625,7 @@ class LiveTurnEvents:
         self._phrase_text = ""
         self._steps: list[dict[str, Any]] = []
         self._tool_stack: list[tuple[str, float, dict[str, Any]]] = []
+        self._stream_text = ""
 
     async def on_status(self, message: str) -> None:
         low = (message or "").strip().lower()
@@ -642,21 +643,30 @@ class LiveTurnEvents:
         return text
 
     def _compose(self) -> str:
-        """Thinking line with elapsed time, then finished steps as Markdown bullets."""
+        """Thinking line, finished steps, then the streaming reply so far."""
         elapsed = _format_duration(time.monotonic() - self._t0)
         head = f"{self._phrase_text} ({elapsed})"
-        if not self._steps:
-            return head
-        shown = self._steps[-_MAX_STEPS:]
-        hidden = len(self._steps) - len(shown)
-        body = "\n".join(_render_steps(shown))
-        if hidden:
-            plural = "s" if hidden != 1 else ""
-            body = f"- … {hidden} earlier step{plural}\n{body}"
-        return f"{head}\n\n{body}"
+        parts = [head]
+        if self._steps:
+            shown = self._steps[-_MAX_STEPS:]
+            hidden = len(self._steps) - len(shown)
+            body = "\n".join(_render_steps(shown))
+            if hidden:
+                plural = "s" if hidden != 1 else ""
+                body = f"- … {hidden} earlier step{plural}\n{body}"
+            parts.append(body)
+        if self._stream_text:
+            parts.append(self._stream_text)
+        return "\n\n".join(parts)
 
     async def on_stream_delta(self, text: str) -> None:
-        return None
+        if self._closed or not text:
+            return
+        # Show the answer as it forms; the final reply still arrives as its own
+        # message. Keeping only a tail avoids unbounded memory on long replies.
+        self._stream_text = (self._stream_text + text)[-self.max_len :]
+        await self._leave_idle()
+        await self._emit(self._compose())
 
     async def on_tool_start(self, name: str, args: dict[str, Any]) -> None:
         # Arguments steer the finished-step summary; raw result bodies stay hidden.
@@ -680,17 +690,13 @@ class LiveTurnEvents:
         task = self._flush_task
         if task is not None and not task.done():
             task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
         pending = self._pending
         self._pending = None
         if pending and pending != self._last_text:
-            try:
+            with suppress(Exception):
                 await self.sink.set_status(pending[: self.max_len])
-            except Exception:
-                pass
 
     async def _enter_idle(self) -> None:
         if self._closed:
@@ -707,10 +713,8 @@ class LiveTurnEvents:
         self._idle_task = None
         if task is not None and not task.done():
             task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
 
     async def _rotate_idle(self) -> None:
         try:
@@ -756,10 +760,8 @@ class LiveTurnEvents:
                 return
             self._last_sent = time.monotonic()
             self._last_text = text
-        try:
+        with suppress(Exception):
             await self.sink.set_status(text)
-        except Exception:
-            pass
 
 
 @asynccontextmanager
@@ -781,10 +783,8 @@ async def typing_keepalive(
     """Refresh chat 'typing' indicator while a turn runs."""
     stop = stop or asyncio.Event()
     while not stop.is_set():
-        try:
+        with suppress(Exception):
             await send()
-        except Exception:
-            pass
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval_s)
             return

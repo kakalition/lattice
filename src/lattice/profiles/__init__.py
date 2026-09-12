@@ -20,6 +20,7 @@ from lattice.profiles.store import (
     resolve_sticky_profile,
     soul_path,
     validate_profile_id,
+    validate_removable_profile,
     write_soul,
     write_soul_name,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "soul_path",
     "system_soul",
     "validate_profile_id",
+    "validate_removable_profile",
     "write_soul",
     "write_soul_name",
 ]

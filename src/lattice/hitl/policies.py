@@ -6,6 +6,7 @@ Clarification choices go through ``clarify`` (not this gate).
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 # Shell HITL only for high-blast-radius commands.
@@ -149,6 +150,52 @@ def shell_needs_approval(
     if _recursive_rm_needs_approval(command, home=home, workspace=workspace):
         return True
     return any(p.search(command) for p in DANGEROUS_SHELL_PATTERNS)
+
+
+# Root-wide scans burn the shell timeout and rarely find the one file the agent
+# wants; the runtime notice points at targeted tools instead.
+_SCAN_SPLIT = re.compile(r"&&|\|\||;|\|")
+_ROOT_TOKENS = frozenset({"/", "~", "$HOME", "~/", "~\\"})
+_SCAN_HINT = (
+    "refusing unbounded filesystem scan ({verb} over / or ~); "
+    "use search_files to locate files or sqlite_schema for databases"
+)
+
+
+def _scan_tokens(part: str) -> list[str]:
+    try:
+        return shlex.split(part)
+    except ValueError:
+        return part.split()
+
+
+def _is_root_target(token: str) -> bool:
+    return token.strip("'\"") in _ROOT_TOKENS
+
+
+def unbounded_scan_reason(command: str) -> str | None:
+    """Return a rejection reason for a root-wide scan, else ``None``."""
+    for part in _SCAN_SPLIT.split(command or ""):
+        tokens = _scan_tokens(part)
+        if not tokens:
+            continue
+        verb = tokens[0].rsplit("/", 1)[-1]
+        args = tokens[1:]
+        if verb in {"find", "du"} and any(_is_root_target(a) for a in args):
+            return _SCAN_HINT.format(verb=verb)
+        if verb in {"grep", "rg", "ag"}:
+            recursive = any(
+                a in {"-r", "-R", "--recursive"}
+                or (a.startswith("-") and not a.startswith("--") and "r" in a[1:].lower())
+                for a in args
+            )
+            if recursive and any(_is_root_target(a) for a in args):
+                return _SCAN_HINT.format(verb=verb)
+        if verb == "ls":
+            recursive = any(a in {"-R", "-r", "--recursive"} for a in args)
+            if recursive and any(_is_root_target(a) for a in args):
+                return _SCAN_HINT.format(verb=verb)
+    return None
 
 
 def _strip_sql_literals(sql: str) -> str:

@@ -5,8 +5,8 @@
 timezone: Asia/Jakarta
 
 agent:
-  primary_model: deepseek/deepseek-v4.1-flash
-  iteration_budget: 40
+  primary_model: deepseek/deepseek-v4-flash-0731
+  iteration_budget: 60
   hitl_timeout_seconds: 600
   workspace: null
 

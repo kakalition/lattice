@@ -22,6 +22,8 @@ class DbEntry(BaseModel):
     name: str
     path: Path
     read_only: bool = False
+    # True when register() created a new, empty database file at ``path``.
+    created: bool = False
 
 
 def databases_store_path(home: Path) -> Path:
@@ -66,18 +68,28 @@ def _write_persisted(home: Path, databases: dict[str, SqliteDatabaseConfig]) -> 
     )
 
 
-def _resolve_db_path(path: str | Path, *, home: Path, name: str) -> Path:
+def _resolve_db_path(
+    path: str | Path, *, home: Path, name: str, workspace: Path | None = None
+) -> Path:
     target = Path(path).expanduser()
-    if not target.is_absolute():
-        # Relative paths always land under home/sqlite/<name>.db
-        target = home / "sqlite" / f"{name}.db"
-    return target.resolve()
+    if target.is_absolute():
+        return target.resolve()
+    # Prefer an existing workspace file: ``sqlite_register finance finance.db``
+    # should find ``<workspace>/finance.db`` rather than silently creating an
+    # empty ``<home>/sqlite/finance.db``.
+    if workspace is not None:
+        candidate = (workspace.expanduser() / target).resolve()
+        if candidate.is_file():
+            return candidate
+    # Otherwise relative paths land under home/sqlite/<name>.db
+    return (home / "sqlite" / f"{name}.db").resolve()
 
 
 class SqliteRegistry:
-    def __init__(self, settings: LatticeSettings) -> None:
+    def __init__(self, settings: LatticeSettings, *, workspace: Path | None = None) -> None:
         self.settings = settings
         self._home = settings.home.expanduser().resolve()
+        self._workspace = workspace.expanduser().resolve() if workspace else None
         self._dbs: dict[str, DbEntry] = {}
         self._persisted_names: set[str] = set()
 
@@ -88,7 +100,9 @@ class SqliteRegistry:
         merged.update(persisted)
 
         for name, cfg in merged.items():
-            resolved = _resolve_db_path(cfg.path, home=self._home, name=name)
+            resolved = _resolve_db_path(
+                cfg.path, home=self._home, name=name, workspace=self._workspace
+            )
             self._dbs[name] = DbEntry(name=name, path=resolved, read_only=cfg.read_only)
             # Keep settings in sync for callers that read settings.sqlite.databases
             self.settings.sqlite.databases[name] = SqliteDatabaseConfig(
@@ -112,13 +126,14 @@ class SqliteRegistry:
     def register(self, name: str, path: str | Path, *, read_only: bool = False) -> DbEntry:
         if name == "state":
             raise ValueError("cannot register session state.db")
-        target = _resolve_db_path(path, home=self._home, name=name)
+        target = _resolve_db_path(path, home=self._home, name=name, workspace=self._workspace)
         if is_denied_path(target) or target.name == "state.db":
             raise PermissionError("path denied for sqlite register")
         target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.exists():
+        created = not target.exists()
+        if created:
             target.touch()
-        entry = DbEntry(name=name, path=target, read_only=read_only)
+        entry = DbEntry(name=name, path=target, read_only=read_only, created=created)
         self._dbs[name] = entry
         cfg = SqliteDatabaseConfig(path=str(target), read_only=read_only)
         self.settings.sqlite.databases[name] = cfg
@@ -138,7 +153,5 @@ class SqliteRegistry:
             entry = self._dbs.get(name)
             if entry is None:
                 continue
-            payload[name] = SqliteDatabaseConfig(
-                path=str(entry.path), read_only=entry.read_only
-            )
+            payload[name] = SqliteDatabaseConfig(path=str(entry.path), read_only=entry.read_only)
         _write_persisted(self._home, payload)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shutil
 from pathlib import Path
@@ -29,6 +30,13 @@ logger = logging.getLogger("lattice.cli")
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _drain_memory() -> None:
+    """Flush any queued background memory writes after the loop has closed."""
+    from lattice.memory.worker import drain_memory_sync
+
+    drain_memory_sync()
 
 
 def _boot_memory_self_check(settings, profile: str) -> None:
@@ -199,13 +207,19 @@ def chat(
     if tui:
         from lattice.channel.cli.tui import run_tui
 
-        _run(run_tui(handler, profile_id=profile))
+        try:
+            _run(run_tui(handler, profile_id=profile))
+        finally:
+            _drain_memory()
         return
 
     from lattice.channel.cli.adapter import CliAdapter
 
     adapter = CliAdapter(profile_id=profile)
-    _run(adapter.run(handler))
+    try:
+        _run(adapter.run(handler))
+    finally:
+        _drain_memory()
 
 
 @app.command()
@@ -283,6 +297,10 @@ def gateway(
             await adapter.run(handler)
         finally:
             sched_task.cancel()
+            from lattice.memory.worker import flush_memory
+
+            with contextlib.suppress(Exception):
+                await flush_memory()
             lock.release()
             logger.info("gateway stopped")
 
@@ -290,6 +308,7 @@ def gateway(
         _run(main_async())
     finally:
         lock.release()
+        _drain_memory()
 
 
 if __name__ == "__main__":

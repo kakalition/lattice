@@ -36,6 +36,45 @@ class PromptBundle(BaseModel):
         return "\n".join(f"[notice] {n}" for n in self.notices)
 
 
+def build_runtime_notice(
+    *,
+    workspace: str,
+    now: str,
+    timezone: str,
+    databases: list[tuple[str, str]],
+    profile_id: str,
+    preferred_skills: list[str],
+    user_tools: list[str],
+) -> str:
+    """Compact per-turn environment context (volatile tail, never cached prefix).
+
+    Directly targets the observed waste: repeated ``find /`` / ``ls`` scans,
+    stray ``cd``, and registering a relative DB path against the wrong root.
+    Keep it to a few lines.
+    """
+    dbs = "; ".join(f"{name} -> {path}" for name, path in databases) or "(none registered)"
+    lines = [
+        f"Runtime: workspace={workspace}; now={now} ({timezone}); profile={profile_id}",
+        f"Registered DBs: {dbs}",
+    ]
+    if user_tools:
+        lines.append("User tools: " + ", ".join(user_tools))
+    if preferred_skills:
+        lines.append("Preferred skills: " + ", ".join(preferred_skills))
+    canonical = next(
+        (f"{name} -> {path}" for name, path in databases if "finance" in name.lower()),
+        None,
+    )
+    if canonical:
+        lines.append(f"Canonical finance DB: {canonical}")
+    lines.append(
+        "Rules: the shell cwd is already the workspace — do not `cd`; never run `find /` "
+        "or scan `~`; use search_files/read_file to locate files and sqlite_schema to "
+        "inspect databases; register an existing workspace DB by its relative path."
+    )
+    return "\n".join(lines)
+
+
 def build_skill_index_xml(entries: list[tuple[str, str]]) -> str:
     if not entries:
         return ""

@@ -155,6 +155,35 @@ async def test_live_turn_events_coalesces_pending() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_deltas_render_partial_text() -> None:
+    seen: list[str] = []
+
+    class Sink:
+        async def set_status(self, text: str) -> None:
+            seen.append(text)
+
+    live = LiveTurnEvents(Sink(), min_interval_s=0.0, phrase_interval_s=10.0)
+    async with bind_live_events(live):
+        await live.on_status("thinking")
+        await live.on_stream_delta("Hel")
+        await live.on_stream_delta("lo!")
+    assert seen
+    assert seen[-1].endswith("Hello!")
+    assert "Hello!" in "\n".join(seen)
+
+
+@pytest.mark.asyncio
+async def test_stream_delta_is_capped() -> None:
+    class Sink:
+        async def set_status(self, text: str) -> None:
+            return None
+
+    live = LiveTurnEvents(Sink(), min_interval_s=0.0, max_len=50)
+    await live.on_stream_delta("x" * 100)
+    assert len(live._stream_text) == 50
+
+
+@pytest.mark.asyncio
 async def test_idle_phrases_rotate() -> None:
     seen: list[str] = []
 

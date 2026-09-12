@@ -166,6 +166,8 @@ async def sqlite_register(
     registry: SqliteRegistry, name: str, path: str, *, read_only: bool = False
 ) -> str:
     entry = registry.register(name, path, read_only=read_only)
+    if entry.created:
+        return f"registered {entry.name} -> {entry.path} (new empty database created here)"
     return f"registered {entry.name} -> {entry.path}"
 
 
