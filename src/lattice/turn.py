@@ -52,6 +52,19 @@ class TurnCancelled(Exception):
     pass
 
 
+def _provider_error_text(exc: BaseException) -> str:
+    """User-facing abort message; adds recovery for a rejected sticky model id."""
+    text = str(exc)
+    low = text.lower()
+    if "not a valid model" in low or "model id" in low:
+        return (
+            f"The provider rejected the model: {text}\n\n"
+            "If you set it with `/model`, run `/model clear` to fall back to the "
+            "configured model."
+        )
+    return f"I hit a provider error: {text}"
+
+
 async def run_turn(
     inbound: Inbound,
     *,
@@ -304,10 +317,10 @@ async def run_turn(
                         if retries < 3:
                             continue
                     if action == "abort" or retries >= 3:
-                        text = f"I hit a provider error: {exc}"
+                        text = _provider_error_text(exc)
                         err = str(exc)
                         break
-                    text = f"I hit a provider error: {exc}"
+                    text = _provider_error_text(exc)
                     err = str(exc)
                     break
     finally:

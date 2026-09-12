@@ -296,8 +296,15 @@ async def test_session_store_sticky_primary_model(tmp_path: Path) -> None:
     )
     assert resolve_model_id(settings, profile_model="profile/model") == "profile/model"
     assert normalize_primary_model_id("  a/b  ") == "a/b"
+    # `/model set <id>` must not store the literal verb.
+    assert normalize_primary_model_id("set inclusionai/ling-3.0-flash") == (
+        "inclusionai/ling-3.0-flash"
+    )
+    assert normalize_primary_model_id("SET a/b") == "a/b"
     with pytest.raises(ValueError):
         normalize_primary_model_id("")
+    with pytest.raises(ValueError):
+        normalize_primary_model_id("set")
 
 
 @pytest.mark.asyncio

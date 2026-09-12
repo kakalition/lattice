@@ -43,7 +43,11 @@ def resolve_model_id(
 
 def normalize_primary_model_id(raw: str) -> str:
     mid = (raw or "").strip()
-    if not mid or "\n" in mid or "\r" in mid or len(mid) > 200:
+    # Tolerate the verb form: `/model set <id>` → `<id>`. Model ids never contain
+    # spaces, so a leading "set" token is always the subcommand, not part of the id.
+    if mid[:4].lower() == "set ":
+        mid = mid[4:].strip()
+    if not mid or mid.lower() == "set" or "\n" in mid or "\r" in mid or len(mid) > 200:
         raise ValueError("invalid model id")
     return mid
 
