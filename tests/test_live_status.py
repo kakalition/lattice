@@ -81,13 +81,59 @@ async def test_live_turn_events_lists_finished_steps() -> None:
     # Thinking line carries elapsed time; finished steps follow as Markdown bullets.
     assert re.search(r"\(\d+(?:\.\d+)?s\)", final)
     assert "\n\n" in final
-    # Each step names the tool, describes the action, and hints at the argument.
-    assert "- ✅ **shell** · ran `rm -rf /tmp/secret`" in final
-    assert "- ✅ **read_file** · read `notes.txt`" in final
+    # Plain-language actions, no tool names, raw commands, or paths.
+    assert "- ✅ Tidied up" in final
+    assert "- ✅ Read notes.txt" in final
+    assert "shell" not in joined
+    assert "rm -rf" not in joined
+    assert "/tmp/secret" not in joined
     # Raw result bodies and internal status text never leak.
     assert "contents" not in joined
     assert "done" not in joined
     assert "loading" not in joined
+
+
+def test_shell_steps_are_plain_language() -> None:
+    from lattice.channel.live_status import _shell_friendly
+
+    assert _shell_friendly("ls -la /root/") == ("Browsed", "root")
+    assert _shell_friendly("pwd && ls -la") == ("Checked the working directory", "")
+    assert _shell_friendly('find /a/b -name "profiles" -type d') == ("Looked for", "profiles")
+    assert _shell_friendly("find /a/b -type d") == ("Looked in", "b")
+    assert _shell_friendly('cd /x && grep -rn "NEEDLE" src') == ("Searched for", "NEEDLE")
+    assert _shell_friendly('sed -n "110,160p" src/lattice/tools/script.py') == (
+        "Read",
+        "script.py",
+    )
+    assert _shell_friendly("mkdir -p /a/b/finance") == ("Made the folder", "finance")
+    assert _shell_friendly("rm -rf /tmp/secret") == ("Tidied up", "secret")
+    assert _shell_friendly("which bwrap") == ("Checked whether", "bwrap is installed")
+    assert _shell_friendly('sqlite3 sqlite/finance.db "select 1"') == (
+        "Checked the database",
+        "finance.db",
+    )
+    assert _shell_friendly("make build") == ("Ran a command", "")
+
+
+@pytest.mark.asyncio
+async def test_live_turn_events_groups_repeated_actions() -> None:
+    seen: list[str] = []
+
+    class Sink:
+        async def set_status(self, text: str) -> None:
+            seen.append(text)
+
+    live = LiveTurnEvents(Sink(), min_interval_s=0.0, phrase_interval_s=10.0)
+    async with bind_live_events(live):
+        await live.on_status("loading session")
+        long_dir = "/home/user/" + "nested/" * 12 + "profiles"
+        for name in ("USER.md", "SOUL.md", "profile.yaml"):
+            await live.on_tool_start("read_file", {"path": f"{long_dir}/{name}"})
+            await live.on_tool_end("read_file", "body")
+    final = seen[-1]
+    # Consecutive same-action steps collapse into one line with full basenames.
+    assert "- ✅ Read USER.md, SOUL.md, profile.yaml" in final
+    assert final.count("- ✅ Read") == 1
 
 
 @pytest.mark.asyncio

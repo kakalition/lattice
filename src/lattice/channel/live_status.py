@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import shlex
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -315,14 +316,18 @@ def _clip(value: object, limit: int = 60) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _code(value: object, limit: int = 60) -> str:
-    clipped = _clip(value, limit)
-    return f"`{clipped}`" if clipped else ""
+def _basename(value: object) -> str:
+    # Take the basename first, then clip, so a long path never truncates the name.
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    name = text.rstrip("/").split("/")[-1] or text
+    return _clip(name, 40)
 
 
-def _quoted(value: object, limit: int = 50) -> str:
-    clipped = _clip(value, limit)
-    return f"“{clipped}”" if clipped else ""
+def _host(value: object) -> str:
+    text = str(value or "")
+    return text.split("//", 1)[-1].split("/", 1)[0] if text else ""
 
 
 def _outcome(result: str) -> str:
@@ -336,82 +341,210 @@ def _outcome(result: str) -> str:
     return "✅"
 
 
-def _result_note(result: str) -> str:
-    """A short success/failure signal from the tool result (never full output)."""
-    head = (result or "").strip()
-    if not head:
-        return ""
-    match = re.match(r"exit=(\d+)", head)
-    if match:
-        return f"exit {match.group(1)}"
-    if head.lower().startswith(("error:", "denied")):
-        return _clip(head.splitlines()[0], 60)
-    return ""
+def _failure_note(result: str) -> str:
+    """Plain-language reason a step did not succeed (details stay in the logs)."""
+    head = (result or "").strip().lower()
+    if head.startswith("denied"):
+        return "you declined"
+    if re.match(r"exit=[1-9]\d*", head):
+        return "didn't finish"
+    return "hit a problem"
 
 
-# tool name → (action verb, argument hint). Hints clip to keep the bubble compact
-# and deliberately exclude bulk content (file bodies, script code).
-_STEP_DESCRIBERS: dict[str, tuple[str, Callable[[dict[str, Any]], str]]] = {
-    "shell": ("ran", lambda a: _code(a.get("command"))),
-    "execute_script": (
-        "ran a script",
-        lambda a: _code(a.get("path") or f"{a.get('language', '')} inline"),
-    ),
-    "read_file": ("read", lambda a: _code(a.get("path"))),
-    "write_file": ("wrote", lambda a: _code(a.get("path"))),
-    "edit_file": ("edited", lambda a: _code(a.get("path"))),
-    "remove_path": ("removed", lambda a: _code(a.get("path"))),
-    "search_files": ("searched files for", lambda a: _code(a.get("pattern"))),
-    "ocr": ("extracted text from", lambda a: _code(a.get("path"))),
-    "generate_pdf": ("made a PDF at", lambda a: _code(a.get("path"))),
-    "generate_chart": ("made a chart at", lambda a: _code(a.get("path"))),
-    "web_search": ("searched the web for", lambda a: _quoted(a.get("query"))),
-    "web_fetch": ("fetched", lambda a: _code(a.get("url"))),
-    "browser_interact": ("browsed", lambda a: _code(a.get("action"))),
-    "browser_snapshot": ("captured the page", lambda a: ""),
-    "clarify": ("asked you", lambda a: _quoted(a.get("question"))),
-    "calculator": ("calculated", lambda a: _code(a.get("expression"))),
-    "todo": ("updated the todo list", lambda a: _code(a.get("action"))),
-    "schedule_add": ("scheduled", lambda a: _quoted(a.get("reminder"))),
-    "schedule_list": ("listed reminders", lambda a: ""),
-    "schedule_cancel": ("cancelled a reminder", lambda a: _code(a.get("job_id"))),
-    "timezone_get": ("checked the timezone", lambda a: ""),
-    "timezone_set": ("set the timezone to", lambda a: _code(a.get("timezone"))),
-    "session_search": ("searched past sessions for", lambda a: _quoted(a.get("query"))),
-    "memory_search": ("recalled memories for", lambda a: _quoted(a.get("query"))),
-    "memory_add": ("saved a memory", lambda a: _quoted(a.get("text"), 40)),
-    "memory_update": ("updated a memory", lambda a: _code(a.get("memory_id"))),
-    "memory_forget": ("forgot a memory", lambda a: _code(a.get("memory_id"))),
-    "sqlite_list": ("listed databases", lambda a: ""),
-    "sqlite_schema": ("inspected the schema of", lambda a: _code(a.get("name"))),
-    "sqlite_query": ("queried", lambda a: _code(a.get("name"))),
-    "sqlite_execute": ("wrote to", lambda a: _code(a.get("name"))),
-    "sqlite_register": ("registered", lambda a: _code(a.get("name"))),
-    "sqlite_unregister": ("unregistered", lambda a: _code(a.get("name"))),
-    "sqlite_backup": ("backed up", lambda a: _code(a.get("name"))),
-    "skills_list": ("listed skills", lambda a: ""),
-    "skill_view": ("loaded the skill", lambda a: _code(a.get("name"))),
-    "profile_list": ("listed profiles", lambda a: ""),
-    "profile_remove": ("removed the profile", lambda a: _code(a.get("profile_id"))),
+# Shell verbs whose action is clear from the verb alone (fallback when we cannot
+# name a target). Commands are never shown verbatim.
+_SHELL_ACTIONS: dict[str, str] = {
+    "pwd": "Checked the working directory",
+    "git": "Checked the project history",
+    "echo": "Checked a detail",
+    "printf": "Checked a detail",
+    "true": "Checked a detail",
 }
 
 
-def _describe_step(name: str, args: dict[str, Any], result: str, duration: float) -> str:
-    """One Markdown bullet: outcome, tool, action + arg hint, result note, duration."""
-    verb, hint_of = _STEP_DESCRIBERS.get(name, ("ran", lambda a: ""))
+def _tokens(part: str) -> list[str]:
     try:
-        hint = hint_of(args or {})
-    except Exception:
-        hint = ""
-    detail = f"{verb} {hint}".strip()
-    parts = [f"- {_outcome(result)} **{name}**"]
-    if detail:
-        parts.append(detail)
-    note = _result_note(result)
-    if note:
-        parts.append(note)
-    parts.append(_format_duration(duration))
-    return " · ".join(parts)
+        return shlex.split(part)
+    except ValueError:
+        return part.split()
+
+
+def _flag_value(tokens: list[str], flag: str) -> str:
+    for i, token in enumerate(tokens[:-1]):
+        if token == flag:
+            return _clip(tokens[i + 1].strip("'\""), 40)
+    return ""
+
+
+def _shell_friendly(command: str) -> tuple[str, str]:
+    """(action, subject) for a shell command, derived from its first real verb."""
+    segment = ""
+    for part in re.split(r"&&|\|\||;|\|", command or ""):
+        tokens = _tokens(part)
+        if not tokens or tokens[0] in {"cd", "export", "set", "source"}:
+            continue
+        segment = part
+        break
+    if not segment:
+        return "Checked a detail", ""
+    tokens = _tokens(segment)
+    verb = tokens[0].rsplit("/", 1)[-1]
+    args = [t for t in tokens[1:] if not t.startswith("-")]
+    first = _basename(args[0]) if args else ""
+
+    if verb == "ls":
+        return "Browsed", first or "the folder"
+    if verb == "find":
+        named = _flag_value(tokens, "-name") or _flag_value(tokens, "-iname")
+        if named:
+            return "Looked for", named
+        return "Looked in", first or "your files"
+    if verb in {"grep", "rg", "ag"}:
+        return "Searched for", _clip(args[0].strip("'\""), 40) if args else "a phrase"
+    if verb in {"cat", "head", "tail", "less", "more"}:
+        return "Read", first or "a file"
+    if verb in {"sed", "awk"}:
+        files = [t for t in args if not re.fullmatch(r"[\d,;p\-]+", t)]
+        return "Read", _basename(files[0]) if files else "a file"
+    if verb == "mkdir":
+        return "Made the folder", first
+    if verb == "touch":
+        return "Created", first or "a file"
+    if verb in {"cp", "mv"}:
+        return ("Copied" if verb == "cp" else "Moved"), _basename(args[-1]) if args else ""
+    if verb == "rm":
+        return "Tidied up", _basename(args[-1]) if args else ""
+    if verb in {"python", "python3", "node"}:
+        if "-" in tokens[1:] or "<<" in segment:
+            return "Ran", "a script"
+        return "Ran", first or "a script"
+    if verb == "which":
+        return "Checked whether", f"{args[0]} is installed" if args else ""
+    if verb == "sqlite3":
+        return "Checked the database", first
+    if verb in _SHELL_ACTIONS:
+        return _SHELL_ACTIONS[verb], ""
+    return "Ran a command", ""
+
+
+def _friendly_action(name: str, args: dict[str, Any]) -> tuple[str, str]:
+    """(action phrase, subject) in plain language; no tool names or raw commands."""
+    get = args.get
+    if name == "shell":
+        return _shell_friendly(str(get("command") or ""))
+    if name == "read_file":
+        return "Read", _basename(get("path"))
+    if name == "write_file":
+        return "Wrote", _basename(get("path"))
+    if name == "edit_file":
+        return "Updated", _basename(get("path"))
+    if name == "remove_path":
+        return "Removed", _basename(get("path"))
+    if name == "search_files":
+        return "Looked for", _clip(get("pattern"), 40)
+    if name == "web_search":
+        return "Searched the web for", _clip(get("query"), 50)
+    if name == "web_fetch":
+        return "Opened", _host(get("url"))
+    if name == "execute_script":
+        target = get("path") or f"{get('language', '')} script"
+        return "Ran", _basename(target)
+    if name == "ocr":
+        return "Read text from", _basename(get("path"))
+    if name == "generate_pdf":
+        return "Made a PDF from", _basename(get("path"))
+    if name == "generate_chart":
+        return "Made a chart from", _basename(get("path"))
+    if name == "calculator":
+        return "Worked out", _clip(get("expression"), 40)
+    if name == "clarify":
+        return "Asked you a question", ""
+    if name == "todo":
+        return "Updated the to-do list", ""
+    if name == "schedule_add":
+        return "Set a reminder for", _clip(get("reminder"), 40)
+    if name == "schedule_list":
+        return "Checked your reminders", ""
+    if name == "schedule_cancel":
+        return "Cancelled a reminder", ""
+    if name == "timezone_get":
+        return "Checked the time zone", ""
+    if name == "timezone_set":
+        return "Set the time zone to", _clip(get("timezone"), 30)
+    if name == "session_search":
+        return "Looked back through your chats for", _clip(get("query"), 40)
+    if name == "memory_search":
+        return "Recalled memories about", _clip(get("query"), 40)
+    if name == "memory_add":
+        return "Saved a memory", ""
+    if name == "memory_update":
+        return "Updated a memory", ""
+    if name == "memory_forget":
+        return "Forgot a memory", ""
+    if name == "sqlite_list":
+        return "Listed your databases", ""
+    if name.startswith("sqlite_"):
+        return "Worked on the database", _clip(get("name"), 30)
+    if name == "skills_list":
+        return "Listed the available skills", ""
+    if name == "skill_view":
+        return "Opened the skill", _clip(get("name"), 30)
+    if name == "profile_list":
+        return "Listed your profiles", ""
+    if name == "profile_remove":
+        return "Removed the profile", _clip(get("profile_id"), 30)
+    if name == "browser_interact":
+        return "Used the browser", ""
+    if name == "browser_snapshot":
+        return "Captured the page", ""
+    return "Worked on your request", ""
+
+
+def _describe_step(name: str, args: dict[str, Any], result: str, duration: float) -> dict[str, Any]:
+    icon = _outcome(result)
+    action, subject = _friendly_action(name, args or {})
+    return {
+        "icon": icon,
+        "action": action,
+        "subject": subject,
+        "note": "" if icon == "✅" else _failure_note(result),
+        "duration": duration,
+    }
+
+
+def _render_steps(steps: list[dict[str, Any]]) -> list[str]:
+    """Collapse consecutive same-action steps into one readable line."""
+    lines: list[str] = []
+    i = 0
+    while i < len(steps):
+        step = steps[i]
+        subjects = [step["subject"]] if step["subject"] else []
+        total = step["duration"]
+        j = i + 1
+        while (
+            j < len(steps)
+            and not step["note"]
+            and not steps[j]["note"]
+            and steps[j]["icon"] == step["icon"]
+            and steps[j]["action"] == step["action"]
+        ):
+            if steps[j]["subject"]:
+                subjects.append(steps[j]["subject"])
+            total += steps[j]["duration"]
+            j += 1
+        unique = list(dict.fromkeys(subjects))
+        shown = ", ".join(unique[:3])
+        if len(unique) > 3:
+            shown += f" +{len(unique) - 3} more"
+        line = f"- {step['icon']} {step['action']}"
+        if shown:
+            line += f" {shown}"
+        if step["note"]:
+            line += f" · {step['note']}"
+        line += f" · {_format_duration(total)}"
+        lines.append(line)
+        i = j
+    return lines
 
 
 def current_live_events() -> TurnEvents | None:
@@ -490,7 +623,7 @@ class LiveTurnEvents:
         # steps accumulate beneath it.
         self._t0 = time.monotonic()
         self._phrase_text = ""
-        self._steps: list[str] = []
+        self._steps: list[dict[str, Any]] = []
         self._tool_stack: list[tuple[str, float, dict[str, Any]]] = []
 
     async def on_status(self, message: str) -> None:
@@ -516,7 +649,7 @@ class LiveTurnEvents:
             return head
         shown = self._steps[-_MAX_STEPS:]
         hidden = len(self._steps) - len(shown)
-        body = "\n".join(shown)
+        body = "\n".join(_render_steps(shown))
         if hidden:
             plural = "s" if hidden != 1 else ""
             body = f"- … {hidden} earlier step{plural}\n{body}"
