@@ -79,6 +79,24 @@ class MemoryConfig(BaseModel):
     self_check: bool = True
 
 
+class OrchestratorConfig(BaseModel):
+    """Whole-turn routing between the primary and a user-facing worker.
+
+    The classifier shares the primary's stable system prefix so provider-side
+    prompt caching covers the instructions on every turn. Set ``enabled: false``
+    to always run the primary (legacy behavior).
+    """
+
+    enabled: bool = True
+    # None → use the resolved primary model for classification.
+    classifier_model: str | None = None
+    # None → use ``agent.secondary_model`` (profile override still wins).
+    worker_model: str | None = None
+    # None (default) → no output cap on the classifier; a cap can truncate the
+    # routing JSON and force a needless HIGH fallback.
+    classifier_max_tokens: int | None = None
+
+
 class AgentConfig(BaseModel):
     workspace: Path | None = None
     primary_model: str = "openai:gpt-4o"
@@ -94,6 +112,7 @@ class AgentConfig(BaseModel):
     # No-op for providers without explicit cache control (OpenAI/DeepSeek auto-cache).
     prompt_cache: bool = True
     prompt_cache_ttl: Literal["5m", "1h"] = "5m"
+    orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
 
 
 class ProviderConfig(BaseModel):
@@ -302,6 +321,13 @@ agent:
   # Explicit prompt caching for OpenRouter Anthropic/Gemini models.
   # prompt_cache: true
   # prompt_cache_ttl: 5m   # 5m | 1h (1h is Anthropic-only)
+  # Whole-turn routing: a share-prefix classifier picks LOW (user-facing worker)
+  # or HIGH (primary). Deterministic HIGH bypass for media/steer/injected model.
+  orchestrator:
+    enabled: true
+    classifier_model: null   # default: resolved primary
+    worker_model: null       # default: secondary_model
+    classifier_max_tokens: null   # null = no cap (a cap can truncate the routing JSON)
 
 provider:
   fallback_model: inception/mercury-2.5

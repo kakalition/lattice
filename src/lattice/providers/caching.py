@@ -9,8 +9,13 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic_ai.models.openrouter import OpenRouterModelSettings
+from pydantic_ai.settings import ModelSettings
 
 from lattice.config import LatticeSettings
+from lattice.providers.openai_compat import is_openrouter
+
+# OpenRouter sticky-routing session id is a body-level field; the limit is documented.
+_SESSION_ID_MAX = 256
 
 
 def _profile(model: Any) -> dict[str, Any] | None:
@@ -42,3 +47,17 @@ def prompt_cache_settings(settings: LatticeSettings, model: Any) -> OpenRouterMo
     if profile.get("openrouter_supports_tool_cache", False):
         cache["openrouter_cache_tool_definitions"] = ttl
     return cache
+
+
+def session_routing_settings(settings: LatticeSettings, session_id: str | None) -> ModelSettings:
+    """OpenRouter sticky-routing hint: keep a session on the same provider.
+
+    Returns ``{}`` for non-OpenRouter endpoints (or absent/oversized ids) so the
+    caller never sends ``extra_body.session_id`` where it is meaningless. Sticky
+    sessions also keep prompt-cache locality on auto-caching providers such as
+    DeepSeek, which have no explicit ``CachePoint`` control.
+    """
+    sid = (session_id or "").strip()
+    if not sid or len(sid) > _SESSION_ID_MAX or not is_openrouter(settings):
+        return {}
+    return {"extra_body": {"session_id": sid}}

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
 
 from lattice.agent_app import (
@@ -15,6 +16,7 @@ from lattice.agent_app import (
     create_agent,
     resolve_enabled_tools,
 )
+from lattice.agents.secondary import run_worker
 from lattice.channel.live_status import current_live_events
 from lattice.config import LatticeSettings, load_settings
 from lattice.context import PressureConfig, compress
@@ -22,6 +24,7 @@ from lattice.events import NullTurnEvents, TurnEvents
 from lattice.hitl import AutoApproveHitl, HitlPort
 from lattice.mcp import McpHostManager
 from lattice.models import Inbound, Outbound
+from lattice.orchestrator import Complexity, decide_route
 from lattice.profiles import get_profile
 from lattice.providers import (
     AuxiliaryClient,
@@ -29,9 +32,17 @@ from lattice.providers import (
     classify_provider_error,
     recovery_action,
 )
-from lattice.providers.caching import prompt_cache_settings, supports_explicit_cache
+from lattice.providers.caching import (
+    prompt_cache_settings,
+    session_routing_settings,
+    supports_explicit_cache,
+)
 from lattice.providers.fallback_cooldown import FallbackCooldown
-from lattice.providers.settings import resolve_model_id
+from lattice.providers.settings import (
+    classifier_model_name,
+    resolve_model_id,
+    secondary_model_name,
+)
 from lattice.providers.usage import usage_to_dict
 from lattice.runtime import set_cwd
 from lattice.session import SessionStore, sanitize_messages
@@ -164,7 +175,19 @@ async def run_turn(
         sticky_model=sticky_model,
     )
     model_obj = model or build_openai_model(settings, primary_id)
-    cache_settings = prompt_cache_settings(settings, model_obj)
+    cache_settings = cast(
+        ModelSettings,
+        {
+            **prompt_cache_settings(settings, model_obj),
+            **session_routing_settings(settings, session_id),
+        },
+    )
+    worker_id = secondary_model_name(settings, profile_secondary=profile.secondary_model)
+    classifier_id = classifier_model_name(
+        settings,
+        profile_model=profile.primary_model or profile.model,
+        sticky_model=sticky_model,
+    )
 
     # History before this turn (cacheable prefix); current user saved separately
     history = session_dicts_to_history(
@@ -234,84 +257,154 @@ async def run_turn(
                 system_prompt=system_prompt,
                 model=override_model,
                 mcp=mcp,
-                model_settings=prompt_cache_settings(s2, override_model),
+                model_settings=cast(
+                    ModelSettings,
+                    {
+                        **prompt_cache_settings(s2, override_model),
+                        **session_routing_settings(s2, session_id),
+                    },
+                ),
             )
             result = await local_agent.run(run_user_prompt, **kwargs)
             return str(result.output), result.usage
         result = await agent.run(run_user_prompt, **kwargs)
         return str(result.output), result.usage
 
-    await events.on_status("thinking")
     deadline = float(settings.agent.idle_watchdog_seconds)
     text = ""
-    usage = RunUsage()
-    usage_payload: dict[str, Any] = usage_to_dict(usage, model=primary_id)
-    retries = 0
     err: str | None = None
+    route = Complexity.HIGH
+    classifier_usage = RunUsage()
+    executor_id = primary_id
+    retries = 0
+
+    # Deterministic HIGH bypass: media/steer/injected model must reach the primary
+    # without an extra classifier request (and get the full multi-step loop).
+    routing_enabled = (
+        settings.agent.orchestrator.enabled
+        and model is None
+        and not inbound.media_paths
+        and not inbound.steer_text
+    )
+    if routing_enabled:
+        await events.on_status("routing")
+        decision, classifier_usage = await decide_route(
+            settings,
+            classifier_id,
+            system_prompt,
+            user_content,
+            session_id=session_id,
+        )
+        route = decision.complexity
+        await events.on_status(f"route={route.value.lower()} ({decision.reason})")
+
+    usage = classifier_usage
+
+    def _usage_payload() -> dict[str, Any]:
+        payload = usage_to_dict(usage, model=executor_id)
+        payload["route"] = route.value.lower()
+        payload["classifier"] = usage_to_dict(classifier_usage, model=classifier_id)
+        return payload
+
+    usage_payload = _usage_payload()
     try:
-        while True:
+        if route is Complexity.LOW:
             if cancel_event and cancel_event.is_set():
                 raise TurnCancelled("cancelled")
             try:
-                text, attempt_usage = await with_deadline(
-                    _run_once(), seconds=deadline, label="turn"
+                worker_text, worker_usage = await with_deadline(
+                    run_worker(
+                        deps,
+                        task=run_user_prompt,
+                        system_prompt=prompt.worker_system_prompt(),
+                    ),
+                    seconds=deadline,
+                    label="worker",
                 )
-                usage = usage + attempt_usage
-                if not text.strip():
-                    raise RuntimeError("empty completion")
-                break
             except TurnCancelled:
                 raise
             except Exception as exc:
-                reason = classify_provider_error(exc)
-                action = recovery_action(reason)
-                await events.on_status(f"provider {reason.value} → {action}")
-                if action == "retry" and retries < 2:
-                    retries += 1
-                    continue
-                if action == "compress":
-                    await memory.sync_turn(messages)
-                    aux = AuxiliaryClient(settings, profile.auxiliary_model)
-                    result = await compress(
-                        messages,
-                        aux=aux,
-                        protect_last_n=settings.agent.protect_last_n,
-                        pressure=pressure,
+                await events.on_status(f"worker failed → high ({exc})")
+                route = Complexity.HIGH
+            else:
+                if worker_text.strip():
+                    text = worker_text
+                    usage = usage + worker_usage
+                    executor_id = worker_id
+                else:
+                    await events.on_status("worker empty → high")
+                    route = Complexity.HIGH
+
+        if route is Complexity.HIGH:
+            await events.on_status("thinking")
+            while True:
+                if cancel_event and cancel_event.is_set():
+                    raise TurnCancelled("cancelled")
+                try:
+                    text, attempt_usage = await with_deadline(
+                        _run_once(), seconds=deadline, label="turn"
                     )
-                    messages = result.messages
-                    await store.save_messages(session_id, messages)
-                    retries += 1
-                    if retries < 3:
+                    usage = usage + attempt_usage
+                    if not text.strip():
+                        raise RuntimeError("empty completion")
+                    break
+                except TurnCancelled:
+                    raise
+                except Exception as exc:
+                    reason = classify_provider_error(exc)
+                    action = recovery_action(reason)
+                    await events.on_status(f"provider {reason.value} → {action}")
+                    if action == "retry" and retries < 2:
+                        retries += 1
                         continue
-                if action == "fallback" and settings.provider.fallback_model:
-                    deps.cooldown.mark_fallback()
-                    try:
-                        text, attempt_usage = await with_deadline(
-                            _run_once(settings.provider.fallback_model),
-                            seconds=deadline,
-                            label="fallback turn",
+                    if action == "compress":
+                        await memory.sync_turn(messages)
+                        aux = AuxiliaryClient(settings, profile.auxiliary_model)
+                        result = await compress(
+                            messages,
+                            aux=aux,
+                            protect_last_n=settings.agent.protect_last_n,
+                            pressure=pressure,
                         )
-                        usage = usage + attempt_usage
-                        break
-                    except Exception:
+                        messages = result.messages
+                        await store.save_messages(session_id, messages)
+                        retries += 1
+                        if retries < 3:
+                            continue
+                    if action == "fallback" and settings.provider.fallback_model:
+                        deps.cooldown.mark_fallback()
+                        try:
+                            text, attempt_usage = await with_deadline(
+                                _run_once(settings.provider.fallback_model),
+                                seconds=deadline,
+                                label="fallback turn",
+                            )
+                            usage = usage + attempt_usage
+                            break
+                        except Exception:
+                            text = f"I hit a provider error: {exc}"
+                            err = str(exc)
+                            break
+                    if action == "abort" or retries >= 3:
                         text = f"I hit a provider error: {exc}"
                         err = str(exc)
                         break
-                if action == "abort" or retries >= 3:
                     text = f"I hit a provider error: {exc}"
                     err = str(exc)
                     break
-                text = f"I hit a provider error: {exc}"
-                err = str(exc)
-                break
     finally:
         if text:
             messages.append({"role": "assistant", "content": text})
-            usage_payload = usage_to_dict(usage, model=primary_id)
+            usage_payload = _usage_payload()
             await store.save_messages(session_id, messages, usage=usage_payload)
             await memory.sync_turn(messages[-4:])
         await pool.close_all()
-        trace.log_end(outbound_text=text or "", error=err, usage=usage_payload)
+        trace.log_end(
+            outbound_text=text or "",
+            error=err,
+            usage=usage_payload,
+            route=route.value.lower(),
+        )
 
     await events.on_stream_delta(text)
     media = [p for p in deps.outbound_media if p.exists()]

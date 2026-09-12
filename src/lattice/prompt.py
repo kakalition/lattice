@@ -13,6 +13,24 @@ have (minus `delegate`), so it can also run shell/write/sqlite/schedule actions 
 task needs them; high-blast-radius actions stay approval-gated. The secondary cannot talk \
 to the user, so synthesize its result yourself. Delegate only to one level — the secondary \
 cannot delegate further.
+
+### Turn routing protocol
+A turn that begins with the literal marker `[route]` is a routing probe, not a normal user \
+request. When you see `[route]`, reply with exactly one JSON object and nothing else:
+{"complexity":"LOW|HIGH","task":"<self-contained instruction>","reason":"<short>"}
+- LOW: a bounded single-pass answer or generation, at most trivial tool use, no planning.
+- HIGH: multi-step work, tool orchestration, coding, ambiguity, safety-sensitive actions, \
+or long-context synthesis.
+For a normal turn (no `[route]` marker), answer normally and never emit this JSON.
+"""
+
+# User-facing directive for the router's worker (no classifier protocol).
+WORKER_ROUTING = """\
+## Worker mode
+You are answering the end user directly for this bounded, single-pass task. Be concise and \
+complete, and address the user in their language. Use your tools only when the task needs \
+them and never invent tools you lack. High-blast-radius actions (destructive shell, sqlite \
+DDL/DML, script execution) stay approval-gated. You have no `delegate` tool.
 """
 
 
@@ -42,6 +60,17 @@ class PromptBundle(BaseModel):
     def system_prompt(self) -> str:
         """Alias for stable system (notices must not live here)."""
         return self.stable_system_prompt()
+
+    def worker_system_prompt(self) -> str:
+        """User-facing worker prefix — same identity/context/skills, no classifier protocol."""
+        parts = [self.identity.strip()]
+        if self.context.strip():
+            parts.append(self.context.strip())
+        if self.skill_index.strip():
+            parts.append(self.skill_index.strip())
+        if WORKER_ROUTING.strip():
+            parts.append(WORKER_ROUTING.strip())
+        return "\n\n".join(p for p in parts if p)
 
     def user_volatile_preamble(self) -> str:
         """Per-turn context appended ahead of the user message (cache-busting tail only)."""

@@ -54,13 +54,28 @@ def model_name(
     profile_model: str | None = None,
     sticky_model: str | None = None,
 ) -> str:
-    return resolve_model_id(
-        settings, profile_model=profile_model, sticky_model=sticky_model
-    )
+    return resolve_model_id(settings, profile_model=profile_model, sticky_model=sticky_model)
 
 
 def secondary_model_name(settings: LatticeSettings, *, profile_secondary: str | None = None) -> str:
-    return profile_secondary or settings.agent.secondary_model
+    """Worker model id: configured worker override wins over profile then agent default."""
+    return (
+        settings.agent.orchestrator.worker_model
+        or profile_secondary
+        or settings.agent.secondary_model
+    )
+
+
+def classifier_model_name(
+    settings: LatticeSettings,
+    *,
+    profile_model: str | None = None,
+    sticky_model: str | None = None,
+) -> str:
+    """Classifier model id: explicit override, else the same id the primary resolves to."""
+    return settings.agent.orchestrator.classifier_model or resolve_model_id(
+        settings, profile_model=profile_model, sticky_model=sticky_model
+    )
 
 
 def auxiliary_model_name(settings: LatticeSettings, *, profile_aux: str | None = None) -> str:

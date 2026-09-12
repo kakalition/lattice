@@ -96,16 +96,19 @@ class LoggingTurnEvents:
         outbound_text: str,
         error: str | None = None,
         usage: dict[str, Any] | None = None,
+        route: str | None = None,
     ) -> None:
         ms = int((time.monotonic() - self.started) * 1000)
         if error:
             self._p("ERROR after %dms: %s", ms, error)
         self._p("outbound: %s", _clip(outbound_text, 4000))
+        route_suffix = f" route={route}" if route else ""
         self._p(
-            "END duration_ms=%d tool_calls=%d skills_used=%s",
+            "END duration_ms=%d tool_calls=%d skills_used=%s%s",
             ms,
             self.tool_calls,
             ",".join(self.skills_used) or "(none)",
+            route_suffix,
         )
         if usage:
             self._p(

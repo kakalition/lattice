@@ -12,6 +12,12 @@ agent:
   iteration_budget: 40
   hitl_timeout_seconds: 600
   workspace: null
+  # Whole-turn routing: classifier picks LOW (user-facing worker) or HIGH (primary).
+  orchestrator:
+    enabled: true
+    classifier_model: null   # default: resolved primary
+    worker_model: null       # default: secondary_model
+    classifier_max_tokens: null   # null = no cap (a cap can truncate the routing JSON)
 
 provider:
   fallback_model: openai/gpt-oss-120b
