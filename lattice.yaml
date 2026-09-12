@@ -18,6 +18,12 @@ agent:
     classifier_model: null   # default: resolved primary
     worker_model: null       # default: secondary_model
     classifier_max_tokens: null   # null = no cap (a cap can truncate the routing JSON)
+    classifier_timeout_seconds: 12   # classifier deadline; timeout → fail-safe HIGH
+    classifier_input_chars: 2000     # truncate user text sent to the classifier
+    worker_timeout_seconds: 30       # LOW worker deadline; timeout → HIGH fallback
+    heuristic_gate: true             # confident LOW/HIGH turns skip the classifier
+    speculative_worker: true         # overlap the LOW worker with the classifier
+    sticky_high: true                # ambiguous turn in a HIGH session → HIGH
 
 provider:
   fallback_model: openai/gpt-oss-120b

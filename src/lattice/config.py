@@ -88,13 +88,31 @@ class OrchestratorConfig(BaseModel):
     """
 
     enabled: bool = True
-    # None → use the resolved primary model for classification.
+    # None → use the resolved primary model for classification. Pointing this at
+    # a small/fast model is the main classifier-latency lever, at the cost of
+    # losing the shared primary prefix cache (prefer a fast model only when
+    # classifier latency dominates).
     classifier_model: str | None = None
     # None → use ``agent.secondary_model`` (profile override still wins).
     worker_model: str | None = None
     # None (default) → no output cap on the classifier; a cap can truncate the
     # routing JSON and force a needless HIGH fallback.
     classifier_max_tokens: int | None = None
+    # Classifier deadline; a timeout is fail-safe HIGH. Decoupled from
+    # ``idle_watchdog_seconds`` so a slow classifier cannot stall the turn.
+    classifier_timeout_seconds: float = 12.0
+    # Truncate the user text sent to the classifier (the ``[route]`` marker is
+    # prepended after truncation so it is never lost).
+    classifier_input_chars: int = 2000
+    # LOW worker deadline; on timeout the turn falls back to the primary.
+    worker_timeout_seconds: float = 30.0
+    # Deterministic pre-gate: confidently LOW/HIGH turns skip the classifier.
+    heuristic_gate: bool = True
+    # Start the LOW worker alongside the classifier so ambiguous LOW turns pay
+    # ``max(classifier, worker)``. The worker is always cancelled before HIGH.
+    speculative_worker: bool = True
+    # On an already-HIGH session, resolve otherwise-ambiguous turns to HIGH.
+    sticky_high: bool = True
 
 
 class AgentConfig(BaseModel):
@@ -328,6 +346,12 @@ agent:
     classifier_model: null   # default: resolved primary
     worker_model: null       # default: secondary_model
     classifier_max_tokens: null   # null = no cap (a cap can truncate the routing JSON)
+    classifier_timeout_seconds: 12   # classifier deadline; timeout → fail-safe HIGH
+    classifier_input_chars: 2000     # truncate user text sent to the classifier
+    worker_timeout_seconds: 30       # LOW worker deadline; timeout → HIGH fallback
+    heuristic_gate: true             # confident LOW/HIGH turns skip the classifier
+    speculative_worker: true         # overlap the LOW worker with the classifier
+    sticky_high: true                # ambiguous turn in a HIGH session → HIGH
 
 provider:
   fallback_model: inception/mercury-2.5

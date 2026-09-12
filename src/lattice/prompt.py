@@ -17,7 +17,7 @@ cannot delegate further.
 ### Turn routing protocol
 A turn that begins with the literal marker `[route]` is a routing probe, not a normal user \
 request. When you see `[route]`, reply with exactly one JSON object and nothing else:
-{"complexity":"LOW|HIGH","task":"<self-contained instruction>","reason":"<short>"}
+{"complexity":"LOW|HIGH","reason":"<short>"}
 - LOW: a bounded single-pass answer or generation, at most trivial tool use, no planning.
 - HIGH: multi-step work, tool orchestration, coding, ambiguity, safety-sensitive actions, \
 or long-context synthesis.
