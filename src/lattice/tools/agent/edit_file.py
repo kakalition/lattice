@@ -6,8 +6,8 @@ from typing import Any
 
 from pydantic_ai import RunContext
 
-from lattice.deps import TurnDeps, maybe_approve, traced
-from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.deps import TurnDeps, traced
+from lattice.tools.agent._common import ToolsetT, ToolTier
 from lattice.tools.file import edit_file as _edit_file
 
 TIER = ToolTier.EAGER
@@ -18,9 +18,6 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
     async def edit_file(
         ctx: RunContext[TurnDeps], path: str, old_string: str, new_string: str
     ) -> str:
-        denied = await maybe_approve(ctx, "edit_file", path, path=path)
-        if denied:
-            return denied
         return await traced(
             ctx,
             "edit_file",

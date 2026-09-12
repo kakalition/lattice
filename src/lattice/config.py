@@ -108,6 +108,8 @@ class AgentConfig(BaseModel):
     idle_watchdog_seconds: int = 600
     # Per-model-request timeout applied via ModelSettings (provider permitting).
     request_timeout_seconds: int = 120
+    # Optional cheaper model for turn summarization; None = the primary model.
+    summarizer_model: str | None = None
     # Explicit prompt caching for capable OpenRouter models (Anthropic/Gemini).
     # No-op for providers without explicit cache control (OpenAI/DeepSeek auto-cache).
     prompt_cache: bool = True
@@ -333,6 +335,8 @@ agent:
   turn_timeout_seconds: 600
   # Per-model-request timeout (provider permitting).
   request_timeout_seconds: 120
+  # Optional cheaper model for turn summarization; omit to use the primary model.
+  # summarizer_model: openai:gpt-4o-mini
   # Explicit prompt caching for OpenRouter Anthropic/Gemini models.
   # prompt_cache: true
   # prompt_cache_ttl: 5m   # 5m | 1h (1h is Anthropic-only)

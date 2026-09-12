@@ -38,6 +38,7 @@ class RowReport(BaseModel):
     tools: list[str] = Field(default_factory=list)
     forbidden_hits: list[str] = Field(default_factory=list)
     tool_calls: int = 0
+    tools_offered: int = 0
     hitl_prompts: int = 0
     retries: int = 0
     ttft_ms: int | None = None
@@ -151,6 +152,7 @@ async def run_row(row: CorpusRow, *, corpus_dir: Path, run_home: Path) -> RowRep
     report.output = outbound.text
     report.tools = collector.tools
     report.tool_calls = len(collector.tools)
+    report.tools_offered = int(record.get("tools_offered") or 0)
     report.hitl_prompts = hitl.prompts
     report.retries = int(record.get("retry_count") or 0)
     report.ttft_ms = record.get("ttft_ms")

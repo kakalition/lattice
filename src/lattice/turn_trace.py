@@ -76,6 +76,7 @@ class LoggingTurnEvents:
         self.started = time.monotonic()
         self.started_at = datetime.now(UTC)
         self.tool_calls = 0
+        self.tools_offered = 0
         self.skills_used: list[str] = []
         # Accumulated per-phase wall time, reported on the END line so the
         # routing latency split is measured rather than guessed.
@@ -165,6 +166,7 @@ class LoggingTurnEvents:
         self.profile_id = profile_id
         self.session_id = session_id
         self.model = model
+        self.tools_offered = len(tools)
         self._p(
             "BEGIN channel=%s user=%s profile=%s session=%s",
             channel,
@@ -206,6 +208,7 @@ class LoggingTurnEvents:
             error_kind=self.error_kind,
             phases={name: int(seconds * 1000) for name, seconds in self.phases.items()},
             tool_ms=sum(t.duration_ms for t in self.tools),
+            tools_offered=self.tools_offered,
             tools=self.tools,
             retry_count=self.retry_count,
             ttft_ms=self.ttft_ms,

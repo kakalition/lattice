@@ -88,6 +88,9 @@ class LoggingModel(WrapperModel):
             setattr(self, attr, getattr(type(self.wrapped), attr))
         self._calls = 0
         self._model_name: str | None = None
+        # Input tokens of the most recent successful request: the closest thing
+        # to the live context size, used to calibrate compression pressure.
+        self.last_input_tokens = 0
 
     def _name(self) -> str:
         # Cache the name: ``model_name`` is cheap, but ``__getattr__`` forwarding
@@ -163,6 +166,8 @@ class LoggingModel(WrapperModel):
             finish_reason=response.finish_reason,
         )
         self._record(messages, response, response.usage, stream=False)
+        if response.usage is not None:
+            self.last_input_tokens = response.usage.input_tokens
         return response
 
     @asynccontextmanager
@@ -199,7 +204,10 @@ class LoggingModel(WrapperModel):
         final: ModelResponse | None = None
         with suppress(Exception):
             final = response_stream.get()
-        self._record(messages, final, getattr(response_stream, "usage", None), stream=True)
+        stream_usage = getattr(response_stream, "usage", None)
+        self._record(messages, final, stream_usage, stream=True)
+        if stream_usage is not None:
+            self.last_input_tokens = stream_usage.input_tokens
 
 
 def with_llm_logging(model: Model) -> Model:

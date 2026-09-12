@@ -27,6 +27,7 @@ from lattice.agent_app import (
 from lattice.channel.live_status import current_live_events
 from lattice.config import LatticeSettings, load_settings
 from lattice.context import PressureConfig, compress
+from lattice.context.index import build_workspace_context
 from lattice.events import NullTurnEvents, TurnEvents
 from lattice.hitl import AutoApproveHitl, HitlPort
 from lattice.mcp import McpHostManager
@@ -73,6 +74,21 @@ _MEDIA_MAX_FILES = 6
 _MEDIA_MAX_BYTES = 25 * 1024 * 1024
 # mtime can land a hair before turn_start on coarse filesystems.
 _MEDIA_MTIME_SLACK = 1.0
+# Tools that can create media; when none are enabled the per-turn media walks
+# are skipped entirely (two full workspace walks saved).
+_MEDIA_TOOLS = frozenset(
+    {
+        "shell",
+        "execute_script",
+        "write_file",
+        "edit_file",
+        "generate_chart",
+        "generate_pdf",
+        "browser_interact",
+        "browser_snapshot",
+        "remove_path",
+    }
+)
 
 
 def snapshot_media(workspace: Path) -> set[Path]:
@@ -201,23 +217,27 @@ async def run_turn(
         sticky_model=sticky_model,
     )
     model_obj = model or build_openai_model(settings, primary_id)
+    summarizer_id = settings.agent.summarizer_model or primary_id
 
     notices: list[str] = []
-    skill_report = scan_skills_for(settings.home, profile)
+    memory = memory or build_memory_for_profile(settings, profile, model_id=primary_id)
+    # Overlap independent pre-model work: skill/tool discovery are disk scans, so
+    # run them off the loop alongside the memory embedding instead of serially.
+    with trace.timed("prefetch"):
+        skill_report, user_tools, prefetch = await asyncio.gather(
+            asyncio.to_thread(scan_skills_for, settings.home, profile),
+            asyncio.to_thread(scan_user_tools, settings.home),
+            memory.search(inbound.text, limit=5),
+        )
     skills = skill_report.skills
     for err in skill_report.errors:
         notices.append(f"[notice] {err}")
     entries = skill_index_entries(
         skills, prefer=profile.skills_prefer, disable=profile.skills_disable
     )
-    user_tools = scan_user_tools(settings.home)
     for err in user_tools.errors:
         notices.append(f"[notice] {err}")
     user_specs = user_tools.specs
-
-    memory = memory or build_memory_for_profile(settings, profile, model_id=primary_id)
-    with trace.timed("memory_prefetch"):
-        prefetch = await memory.search(inbound.text, limit=5)
     if prefetch:
         notices.append("Relevant memories:\n" + "\n".join(f"- {h.get('text')}" for h in prefetch))
 
@@ -240,8 +260,17 @@ async def run_turn(
 
     pressure = PressureConfig(ratio=settings.agent.context_pressure_ratio)
     # Include the pending user turn in the estimate: the stored transcript alone
-    # under-counts and fires compression late.
-    if pressure.is_over_pressure(messages, extra_chars=len(user_content)):
+    # under-counts and fires compression late. Calibrate against the last
+    # request's real token count when available.
+    prior_usage = (existing or {}).get("usage") or {}
+    observed_tokens = int(prior_usage.get("last_input_tokens") or 0)
+    observed_chars = int(prior_usage.get("last_context_chars") or 0)
+    if pressure.is_over_pressure(
+        messages,
+        extra_chars=len(user_content),
+        observed_tokens=observed_tokens,
+        observed_chars=observed_chars,
+    ):
         await events.on_status("compressing context")
         with trace.timed("compress"):
             enqueue_sync(
@@ -250,7 +279,7 @@ async def run_turn(
                 turn_id=turn_id,
                 timeout=float(settings.memory.sync_timeout_seconds),
             )
-            aux = Summarizer(settings, primary_id)
+            aux = Summarizer(settings, summarizer_id)
             result = await compress(
                 messages,
                 aux=aux,
@@ -291,6 +320,12 @@ async def run_turn(
     action_notice = build_action_notice(existing.get("actions") if existing else None)
     if action_notice:
         notices.append(action_notice)
+    # Cheap discovery facts so the model skips its own ls/find/schema warm-up.
+    workspace_context = await build_workspace_context(
+        workspace, registry, pool, allow=profile.sqlite_allow
+    )
+    if workspace_context:
+        notices.append(workspace_context)
     prompt = build_prompt_bundle(profile, entries, notices)
     system_prompt = prompt.stable_system_prompt()
     enabled = resolve_enabled_tools(
@@ -393,10 +428,18 @@ async def run_turn(
     run_messages: list[Any] = []
 
     def _usage_payload() -> dict[str, Any]:
-        return usage_to_dict(usage, model=primary_id)
+        data = usage_to_dict(usage, model=primary_id)
+        # Persist the live context size so the next turn can calibrate pressure.
+        last_tokens = getattr(getattr(agent, "model", None), "last_input_tokens", 0)
+        data["last_input_tokens"] = int(last_tokens or 0)
+        data["last_context_chars"] = pressure.estimate_chars(
+            messages, extra_chars=len(user_content)
+        )
+        return data
 
     usage_payload = _usage_payload()
-    media_before = snapshot_media(workspace)
+    media_capable = bool(_MEDIA_TOOLS.intersection(enabled))
+    media_before = snapshot_media(workspace) if media_capable else set()
     turn_start = time.time()
 
     def _rebuild_history() -> None:
@@ -510,7 +553,7 @@ async def run_turn(
                             turn_id=turn_id,
                             timeout=float(settings.memory.sync_timeout_seconds),
                         )
-                        aux = Summarizer(settings, primary_id)
+                        aux = Summarizer(settings, summarizer_id)
                         result = await compress(
                             messages,
                             aux=aux,
@@ -536,9 +579,7 @@ async def run_turn(
                         if retries < 3:
                             continue
                     outcome = (
-                        TurnOutcome.EMPTY
-                        if error_kind == "empty_completion"
-                        else TurnOutcome.ERROR
+                        TurnOutcome.EMPTY if error_kind == "empty_completion" else TurnOutcome.ERROR
                     )
                     if action == "abort" or retries >= 3:
                         text = _provider_error_text(exc)
@@ -587,12 +628,16 @@ async def run_turn(
         )
 
     media = [p for p in deps.outbound_media if p.exists()]
-    existing_media = {p.resolve() for p in media}
-    media.extend(
-        discover_turn_media(
-            workspace, turn_start=turn_start, before=media_before, existing=existing_media
+    if media_capable:
+        existing_media = {p.resolve() for p in media}
+        media.extend(
+            discover_turn_media(
+                workspace,
+                turn_start=turn_start,
+                before=media_before,
+                existing=existing_media,
+            )
         )
-    )
     return Outbound(
         text=text,
         session_id=session_id,

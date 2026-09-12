@@ -58,6 +58,7 @@ class TurnRecord(BaseModel):
     error_kind: str | None = None
     phases: dict[str, int] = Field(default_factory=dict)
     tool_ms: int = 0
+    tools_offered: int = 0
     tools: list[ToolRecord] = Field(default_factory=list)
     retry_count: int = 0
     ttft_ms: int | None = None

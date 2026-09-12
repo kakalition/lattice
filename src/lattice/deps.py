@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,8 @@ class TurnDeps(BaseModel):
     workspace: Path = Field(default_factory=Path.cwd)
     approval_memory: ApprovalMemory = Field(default_factory=ApprovalMemory)
     consecutive_denials: int = 0
+    # "tool:args" -> failure count, used to break repeated identical failures.
+    tool_failures: dict[str, int] = Field(default_factory=dict)
     enabled_tools: list[str] = Field(default_factory=list)
     skills: list = Field(default_factory=list)
     user_tools: list = Field(default_factory=list)
@@ -95,10 +98,36 @@ class TurnDeps(BaseModel):
     outbound_media: list[Path] = Field(default_factory=list)
 
 
-def truncate_result(text: str, limit: int = 12_000) -> str:
+def _write_scratch(text: str, scratch_dir: Path) -> str:
+    digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:16]
+    path = scratch_dir / f"{digest}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def truncate_result(text: str, limit: int = 12_000, *, scratch_dir: Path | None = None) -> str:
+    """Bound a tool result; when ``scratch_dir`` is given keep head+tail and a ref.
+
+    A single huge result otherwise poisons every later step's context. The full
+    text is written to a scratch file the model can read by range.
+    """
     if len(text) <= limit:
         return text
-    return text[:limit] + "\n[truncated]"
+    if scratch_dir is None:
+        return text[:limit] + "\n[truncated]"
+    try:
+        ref = _write_scratch(text, scratch_dir)
+    except Exception:
+        return text[:limit] + "\n[truncated]"
+    head = int(limit * 0.7)
+    tail = limit - head
+    hidden = len(text) - limit
+    return text[:head] + f"\n...[truncated {hidden} chars; full result: {ref}]...\n" + text[-tail:]
+
+
+def _failure_key(name: str, args: dict[str, Any]) -> str:
+    return f"{name}:{repr(args)[:200]}"
 
 
 async def traced(
@@ -119,7 +148,19 @@ async def traced(
         out = f"error: {exc}"
     if not isinstance(out, str):
         out = str(out)
-    out = truncate_result(out)
+    out = truncate_result(out, scratch_dir=ctx.deps.settings.home / "scratch" / "tool-results")
+    # Repeated identical failures waste requests; nudge the model off the loop.
+    if out.lstrip().lower().startswith(("error:", "denied")):
+        key = _failure_key(name, args)
+        ctx.deps.tool_failures[key] = ctx.deps.tool_failures.get(key, 0) + 1
+        count = ctx.deps.tool_failures[key]
+        if count == 2:
+            out += (
+                "\n[hint: this exact call already failed twice — change the approach "
+                "or ask the user with clarify instead of repeating it.]"
+            )
+        elif count >= 3:
+            out += "\n[hint: repeated-failure breaker — stop retrying this call.]"
     await ctx.deps.events.on_tool_end(name, out)
     return out
 

@@ -1,4 +1,10 @@
-"""Context pressure thresholds."""
+"""Context pressure thresholds.
+
+The estimator is char-based, but when a previous request reported its actual
+``input_tokens`` we calibrate tokens-per-char from that observation instead of
+assuming a fixed ratio. This keeps the compaction trigger honest for providers
+whose tokenizer diverges from the 4-chars/token default.
+"""
 
 from __future__ import annotations
 
@@ -25,5 +31,31 @@ class PressureConfig(BaseModel):
                 total += len(str(msg["tool_calls"]))
         return total
 
-    def is_over_pressure(self, messages: list[dict], *, extra_chars: int = 0) -> bool:
-        return self.estimate_chars(messages, extra_chars=extra_chars) >= self.threshold_chars()
+    def estimate_tokens(
+        self,
+        messages: list[dict],
+        *,
+        extra_chars: int = 0,
+        observed_tokens: int = 0,
+        observed_chars: int = 0,
+    ) -> float:
+        chars = self.estimate_chars(messages, extra_chars=extra_chars)
+        if observed_tokens > 0 and observed_chars > 0:
+            return chars * (observed_tokens / observed_chars)
+        return chars / self.chars_per_token
+
+    def is_over_pressure(
+        self,
+        messages: list[dict],
+        *,
+        extra_chars: int = 0,
+        observed_tokens: int = 0,
+        observed_chars: int = 0,
+    ) -> bool:
+        estimated = self.estimate_tokens(
+            messages,
+            extra_chars=extra_chars,
+            observed_tokens=observed_tokens,
+            observed_chars=observed_chars,
+        )
+        return estimated >= self.model_context_tokens * self.ratio
