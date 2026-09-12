@@ -273,7 +273,9 @@ Use when creating local automation (CSV cleaners, renamers, batch transforms).
 ## Procedure
 1. `clarify` language, inputs/outputs, and whether network is needed (default off).
 2. `write_file` the script (shared `scripts/` or `skills/<skill>/scripts/`).
-3. `execute_script` with path=… and args=[…] ; iterate with `edit_file` on failure.
+3. `execute_script` with `path=…` and `args=[…]` **once**; on failure `edit_file` once
+   and re-run, then stop. No re-reading the file, no `shell` round-trips, and don't
+   run the repo test suite unless the user asked.
 4. Optionally schedule a reminder to run it later via the **scheduling** script.
 
 ## Pitfalls
@@ -386,8 +388,9 @@ Keep it short. Prefer progressive disclosure: index shows description; body load
 ## Channel flow
 1. `clarify` name + purpose if ambiguous.
 2. Draft full `SKILL.md` content in the tool call (not as a giant Telegram paste first).
-3. `write_file` path `skills/<name>/SKILL.md` (HITL may ask approve — explain briefly).
-4. Confirm with `skill_view`. On Telegram, summarize what was written; do not dump the whole file.
+3. `write_file` path `skills/<name>/SKILL.md` (writes are not approval-gated).
+4. Confirm with `skill_view` — it re-scans, so skip `shell` re-reads. On Telegram,
+   summarize what was written; do not dump the whole file.
 
 ## Don't
 - Write under the workspace copy unless the user insists; home `skills/` is canonical.
@@ -442,11 +445,21 @@ timeout_seconds: 60         # optional; clamped by scripts.max_timeout_seconds
   colliding name → the tool is skipped for the turn with a `[notice]`; other tools
   keep working.
 
+## Efficient authoring (do this)
+- Test the handler script **directly, in the same turn**:
+  `execute_script(path="skills/<skill>/scripts/<name>.py", args=[...])`.
+  The manifest itself becomes callable by name next turn — do not retry it now.
+- Path handlers run by their real path, so `__file__`, `sys.path`, and sibling
+  imports (`import helper`) work. Write a normal script; no path-walking hacks.
+- One test call, then `edit_file` **only if it failed**, then stop. Do not `cat`/`sed`
+  the file back, do not re-write it unchanged, and do not run the repo test suite.
+
 ## Worked example
 1. `write_file` `skills/csv/scripts/csv_stats.py` reading JSON from stdin.
 2. `write_file` `tools/csv_stats.yaml` pointing `handler.path` at it.
-3. Next turn: call `csv_stats`; confirm args arrived on stdin.
-4. Edit the script and re-call — the toolset rebuilds automatically.
+3. Test now with `execute_script(path="skills/csv/scripts/csv_stats.py", args=[...])`.
+4. Next turn: call `csv_stats` by name; edit the script and re-call — the toolset
+   rebuilds automatically.
 
 ## Don't
 - Duplicate a core tool name; use `tools.deny` / `tools.cold` to hide or defer.

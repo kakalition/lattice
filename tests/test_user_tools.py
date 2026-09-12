@@ -297,6 +297,37 @@ def test_benign_handler_runs_without_approval(tmp_path: Path) -> None:
     assert hitl.calls == []
 
 
+def test_path_handler_runs_from_its_own_directory(tmp_path: Path) -> None:
+    """A path handler runs by path so __file__ and sibling imports resolve."""
+    script_dir = tmp_path / "skills" / "demo" / "scripts"
+    script_dir.mkdir(parents=True)
+    (script_dir / "helper.py").write_text("VALUE = 'from-sibling'\n", encoding="utf-8")
+    (script_dir / "hi.py").write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "import helper\n"
+        "print('file', Path(__file__).name)\n"
+        "print('sibling', helper.VALUE)\n"
+        "print('name', json.load(sys.stdin)['name'])\n",
+        encoding="utf-8",
+    )
+    _write_tool(
+        tmp_path,
+        "from_path",
+        "name: from_path\ndescription: p\nlanguage: python\n"
+        "parameters:\n  type: object\n  properties:\n    name: {type: string}\n"
+        "  required: [name]\n"
+        "handler:\n  path: skills/demo/scripts/hi.py\n",
+    )
+    spec = scan_user_tools(tmp_path).specs[0]
+    deps = _deps(tmp_path, RecordingHitl(ApprovalDecision.DENY), enabled=["from_path"])
+    toolset = UserToolset([spec])
+    out = asyncio.run(toolset.call_tool("from_path", {"name": "Ada"}, _ctx(deps), None))  # type: ignore[arg-type]
+    assert "file hi.py" in out
+    assert "sibling from-sibling" in out
+    assert "name Ada" in out
+
+
 def test_dangerous_handler_triggers_hitl(tmp_path: Path) -> None:
     _write_tool(
         tmp_path,

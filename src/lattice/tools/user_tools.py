@@ -244,9 +244,15 @@ class UserToolset(AbstractToolset[TurnDeps]):
 
         async def _op() -> str:
             try:
+                run: dict[str, Any] = {"language": spec.language}
+                if (spec.handler.code or "").strip():
+                    run["code"] = body
+                else:
+                    # Run a path handler by its real path, not inlined: __file__
+                    # and __name__ point at the skill script and sibling imports
+                    # work, so handlers need no path-walking hacks.
+                    run["path"] = spec.handler.path
                 result = await execute_script(
-                    language=spec.language,
-                    code=body,
                     timeout=spec.timeout_seconds or 60.0,
                     workspace=ctx.deps.workspace,
                     home=ctx.deps.settings.home,
@@ -257,6 +263,7 @@ class UserToolset(AbstractToolset[TurnDeps]):
                         "LATTICE_TOOL_NAME": spec.name,
                         "LATTICE_TOOL_LANGUAGE": spec.language,
                     },
+                    **run,
                 )
                 return truncate_result(format_script_result(result))
             except Exception as exc:
