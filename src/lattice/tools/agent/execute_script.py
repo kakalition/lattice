@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic_ai import RunContext
 
-from lattice.deps import TurnDeps, maybe_approve, traced, truncate_result
+from lattice.deps import TurnDeps, maybe_approve, traced
 from lattice.tools.agent._common import ToolsetT, ToolTier
 from lattice.tools.file_safety import resolve_agent_path
 from lattice.tools.script import execute_script as _execute_script
@@ -92,9 +92,11 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
                     argv_extra=args,
                     env_extra=env_extra,
                 )
-                return truncate_result(format_script_result(result))
+                # `traced` owns truncation (head+tail with a scratch reference) so
+                # a trailing traceback on stderr survives.
+                return format_script_result(result)
             except Exception as exc:
-                return f"execute_script error: {exc}"
+                return f"error: execute_script: {exc}"
 
         return await traced(
             ctx,

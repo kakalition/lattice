@@ -11,7 +11,7 @@ from lattice.skills import scan_skills_for
 from lattice.skills import skill_view as _skill_view
 from lattice.tools.agent._common import ToolsetT, ToolTier
 
-TIER = ToolTier.COLD
+TIER = ToolTier.EAGER
 
 
 def register(toolset: ToolsetT) -> dict[str, Any]:

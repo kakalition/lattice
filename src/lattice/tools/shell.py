@@ -14,6 +14,9 @@ from lattice.tools.deadline import with_deadline
 
 DEFAULT_TIMEOUT_S = 30.0
 MAX_TIMEOUT_S = 120.0
+# Generous ceiling: the harness truncates with head+tail + a scratch file, so a
+# small pre-slice here would only destroy the trailing traceback.
+STREAM_MAX_CHARS = 1_000_000
 
 
 class ShellResult(BaseModel):
@@ -41,8 +44,8 @@ async def run_shell(command: str, *, timeout: float = DEFAULT_TIMEOUT_S) -> Shel
         stdout_b, stderr_b = await proc.communicate()
         return ShellResult(
             exit_code=proc.returncode or 0,
-            stdout=stdout_b.decode("utf-8", errors="replace")[:20_000],
-            stderr=stderr_b.decode("utf-8", errors="replace")[:20_000],
+            stdout=stdout_b.decode("utf-8", errors="replace")[:STREAM_MAX_CHARS],
+            stderr=stderr_b.decode("utf-8", errors="replace")[:STREAM_MAX_CHARS],
         )
 
     try:

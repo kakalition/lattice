@@ -218,14 +218,14 @@ class UserToolset(AbstractToolset[TurnDeps]):
     ) -> Any:
         spec = self._by_name.get(name)
         if spec is None:
-            return f"unknown user tool: {name}"
+            return f"error: unknown user tool: {name}"
         problem = validate_args(spec.parameters or DEFAULT_PARAMETERS, tool_args)
         if problem:
-            return f"{name}: {problem}"
+            return f"error: {name}: {problem}"
         try:
             body = _handler_body(spec, ctx)
         except Exception as exc:
-            return f"{name}: handler error: {exc}"
+            return f"error: {name}: handler error: {exc}"
 
         summary = spec.handler.path or f"inline {spec.language}"
         denied = await maybe_approve(
@@ -267,7 +267,7 @@ class UserToolset(AbstractToolset[TurnDeps]):
                 )
                 return truncate_result(format_script_result(result))
             except Exception as exc:
-                return f"{name} error: {exc}"
+                return f"error: {name}: {exc}"
 
         return await traced(ctx, name, dict(tool_args), _op)
 

@@ -18,6 +18,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 from pydantic_ai.messages import ModelMessage, ToolCallPart, ToolReturnPart
 
+from lattice.deps import result_failed
+
 _TARGET_KEYS = (
     "path",
     "file",
@@ -36,7 +38,7 @@ _TARGET_KEYS = (
 )
 _ARTIFACT_TOOLS = frozenset({"write_file", "edit_file", "generate_chart", "generate_pdf"})
 # Tools whose result is worth a bounded snippet in the cross-turn ledger.
-_EVIDENCE_TOOLS = frozenset({"read_file", "sqlite_query", "web_fetch"})
+_EVIDENCE_TOOLS = frozenset({"read_file", "sqlite_query", "sqlite_schema", "web_fetch"})
 _SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd|bearer)\b\s*[:=]?\s*\S+")
 _MAX_TARGET = 120
 _MAX_OUTCOME = 120
@@ -115,8 +117,7 @@ def _result_ok(content: Any, part: ToolReturnPart) -> bool:
     declared = getattr(part, "outcome", None)
     if declared == "failed":
         return False
-    low = str(content).lstrip().lower()
-    return not (low.startswith("error:") or low.startswith("denied"))
+    return not result_failed(str(content))
 
 
 def actions_from_messages(
@@ -167,12 +168,22 @@ def actions_from_tool_trace(
 
     On timeout/cancel/budget/post-tool provider error ``run_messages`` is empty,
     but the tools already ran and may have had side effects the next turn must
-    know about. ``tools`` are ``turn_record.ToolRecord``-shaped (name + ok).
+    know about. ``tools`` are ``turn_record.ToolRecord``-shaped (name + ok +
+    clipped args), so the record names the operand in flight.
     """
-    records = [
-        ActionRecord(tool=str(getattr(t, "name", "?")), ok=bool(getattr(t, "ok", True)))
-        for t in tools
-    ]
+    records: list[ActionRecord] = []
+    for t in tools:
+        tool = str(getattr(t, "name", "?"))
+        raw_args = getattr(t, "args", None) or {}
+        target = _target_from_args(raw_args) if raw_args else ""
+        records.append(
+            ActionRecord(
+                tool=tool,
+                target=target,
+                ok=bool(getattr(t, "ok", True)),
+                artifacts=_artifacts_from_args(tool, raw_args),
+            )
+        )
     records = records[-max_actions:]
     if media and records:
         records[-1].artifacts.extend(_clip(str(p), _MAX_ARTIFACT) for p in media)

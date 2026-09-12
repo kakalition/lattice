@@ -7,10 +7,10 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.agent._common import ToolsetT, ToolTier
 from lattice.tools.ocr import ocr_image
 
-TIER = ToolTier.COLD
+TIER = ToolTier.EAGER
 
 
 def register(toolset: ToolsetT) -> dict[str, Any]:

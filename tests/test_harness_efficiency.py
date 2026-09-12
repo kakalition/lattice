@@ -206,7 +206,10 @@ def test_summarizer_reuses_agent(tmp_path: Path) -> None:
 
 def test_eager_toolset_stays_bounded() -> None:
     # Schema bytes ride on every request; keep the eager set deliberately small.
-    assert len(default_eager_names()) <= 16
+    # 20 = the original 15 plus the five tools the harness itself names in
+    # SOUL.md/prompt.py/media notices (schedule_add, skills_list, skill_view,
+    # sqlite_schema, ocr).
+    assert len(default_eager_names()) <= 20
     assert len(set(default_eager_names())) == len(default_eager_names())
 
 

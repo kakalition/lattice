@@ -132,6 +132,20 @@ def _failure_key(name: str, args: dict[str, Any]) -> str:
     return f"{name}:{repr(args)[:200]}"
 
 
+# A tool result is a failure when it announces one. Kept as one predicate so the
+# failure breaker, the turn record, and the action ledger agree. ``unavailable:``
+# is checked anywhere on the first line as a safety net for producers that
+# predate the ``error:`` prefix (e.g. "<tool> unavailable: ...").
+_FAILURE_PREFIXES = ("error:", "denied")
+
+
+def result_failed(text: str) -> bool:
+    """True when a tool result string represents a failure."""
+    low = (text or "").lstrip().lower()
+    head = low.split("\n", 1)[0]
+    return head.startswith(_FAILURE_PREFIXES) or "unavailable:" in head
+
+
 async def traced(
     ctx: RunContext[TurnDeps],
     name: str,
@@ -152,7 +166,7 @@ async def traced(
         out = str(out)
     out = truncate_result(out, scratch_dir=ctx.deps.settings.home / "scratch" / "tool-results")
     # Repeated identical failures waste requests; nudge the model off the loop.
-    if out.lstrip().lower().startswith(("error:", "denied")):
+    if result_failed(out):
         key = _failure_key(name, args)
         ctx.deps.tool_failures[key] = ctx.deps.tool_failures.get(key, 0) + 1
         count = ctx.deps.tool_failures[key]

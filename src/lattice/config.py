@@ -119,9 +119,10 @@ class AgentConfig(BaseModel):
     prompt_cache: bool = True
     prompt_cache_ttl: Literal["5m", "1h"] = "5m"
     # Replay bounded evidence (path + hash + snippet) for recent reads/queries in
-    # the volatile tail. Off by default: changes prompt bytes, so validate with
-    # the offline corpus before enabling.
-    replay_evidence: bool = False
+    # the volatile tail. On by default so a later turn need not re-read the same
+    # file; stays in ``[notice]`` lines (digest-scrubbed) and is tightly capped.
+    # Opt out with ``replay_evidence: false``.
+    replay_evidence: bool = True
     # Model context window override; None = resolve from the model profile.
     context_window_tokens: int | None = None
 
@@ -350,9 +351,9 @@ agent:
   # Explicit prompt caching for OpenRouter Anthropic/Gemini models.
   # prompt_cache: true
   # prompt_cache_ttl: 5m   # 5m | 1h (1h is Anthropic-only)
-  # Replay bounded evidence for recent reads/queries in the volatile tail.
-  # Changes prompt bytes; validate with `lattice eval run` before enabling.
-  # replay_evidence: false
+  # Replay bounded evidence for recent reads/queries in the volatile tail
+  # (digest-scrubbed, ~3KB cap). On by default; set false to disable.
+  # replay_evidence: true
   # Model context window override; null = resolve from the model profile.
   # context_window_tokens: null
 

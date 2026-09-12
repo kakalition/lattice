@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from lattice.deps import result_failed
 from lattice.events import NullTurnEvents, TurnEvents
 from lattice.turn_record import (
     ContextRecord,
@@ -54,8 +55,7 @@ def _clip_args(args: dict[str, Any], limit: int = 400) -> dict[str, str]:
 
 
 def _result_ok(result: str) -> bool:
-    low = result.lstrip().lower()
-    return not (low.startswith("error:") or low.startswith("denied"))
+    return not result_failed(result)
 
 
 class LoggingTurnEvents:
@@ -85,7 +85,9 @@ class LoggingTurnEvents:
         self.phases: dict[str, float] = {}
         # Per-tool timing/completeness for the structured record.
         self.tools: list[ToolRecord] = []
-        self._tool_starts: dict[str, list[float]] = {}
+        # name -> FIFO of (start_monotonic, clipped args); paired with results
+        # in order so concurrent same-name calls keep their own operands.
+        self._tool_starts: dict[str, list[tuple[float, dict[str, str]]]] = {}
         self.ttft_ms: int | None = None
         self.stream_chunks = 0
         self.retry_count = 0
@@ -127,7 +129,7 @@ class LoggingTurnEvents:
             with suppress(Exception):
                 await self.on_tool_start_hook(name)
         self.tool_calls += 1
-        self._tool_starts.setdefault(name, []).append(time.monotonic())
+        self._tool_starts.setdefault(name, []).append((time.monotonic(), _clip_args(args)))
         if name == "skill_view":
             skill = str(args.get("name") or args.get("skill") or "")
             if skill:
@@ -138,10 +140,12 @@ class LoggingTurnEvents:
 
     async def on_tool_end(self, name: str, result: str) -> None:
         duration_ms = 0
+        args: dict[str, str] = {}
         starts = self._tool_starts.get(name)
         if starts:
             # FIFO: pair concurrent same-name calls with their results in order.
-            duration_ms = int((time.monotonic() - starts.pop(0)) * 1000)
+            started, args = starts.pop(0)
+            duration_ms = int((time.monotonic() - started) * 1000)
         self.tools.append(
             ToolRecord(
                 name=name,
@@ -149,6 +153,7 @@ class LoggingTurnEvents:
                 ok=_result_ok(result),
                 result_bytes=len(result),
                 truncated="[truncated]" in result,
+                args=args,
             )
         )
         self._p("tool_end: %s tool_ms=%d result=%s", name, duration_ms, _clip(result, 1200))

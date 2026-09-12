@@ -7,7 +7,7 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.audit import audit_log
-from lattice.deps import TurnDeps, maybe_approve, traced, truncate_result
+from lattice.deps import TurnDeps, maybe_approve, traced
 from lattice.tools.agent._common import ToolsetT, ToolTier
 from lattice.tools.shell import DEFAULT_TIMEOUT_S, run_shell
 
@@ -26,7 +26,9 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
         async def _op() -> str:
             try:
                 result = await run_shell(command, timeout=timeout)
-                out = truncate_result(f"exit={result.exit_code}\n{result.stdout}\n{result.stderr}")
+                # `traced` owns truncation (head+tail with a scratch reference),
+                # so stderr at the tail survives instead of being pre-sliced away.
+                out = f"exit={result.exit_code}\n{result.stdout}\n{result.stderr}"
             except Exception as exc:
                 out = f"shell error: {exc}"
             audit_log("tool", {"name": "shell", "command": command}, home=ctx.deps.settings.home)

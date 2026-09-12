@@ -352,12 +352,12 @@ def _format_ax_node(node: dict[str, Any] | None, *, indent: int = 0) -> list[str
 async def browser_snapshot(*, mode: str = "a11y", max_chars: int = 30_000) -> str:
     mode = (mode or "a11y").strip().lower()
     if mode not in SNAPSHOT_MODES:
-        return f"unknown mode {mode!r}; use a11y or text"
+        return f"error: unknown mode {mode!r}; use a11y or text"
     try:
         driver = await get_driver()
         await driver.ensure()
     except BrowserUnavailable as exc:
-        return str(exc)
+        return f"error: {exc}"
     page = driver.page
     assert page is not None
     url = page.url or "(about:blank)"
@@ -388,7 +388,7 @@ async def browser_interact(
 ) -> str:
     action = (action or "").strip().lower()
     if action not in BROWSER_ACTIONS:
-        return f"unknown action {action!r}; use one of: {', '.join(sorted(BROWSER_ACTIONS))}"
+        return f"error: unknown action {action!r}; use one of: {', '.join(sorted(BROWSER_ACTIONS))}"
 
     if action == "close":
         await reset_driver()
@@ -397,19 +397,19 @@ async def browser_interact(
     if action == "navigate":
         err = _validate_url(url or "")
         if err:
-            return err
+            return f"error: {err}"
     elif action in {"click", "type", "select"} and not selector:
-        return f"{action} requires selector"
+        return f"error: {action} requires selector"
     elif action == "type" and value is None:
-        return "type requires value"
+        return "error: type requires value"
     elif action == "select" and value is None:
-        return "select requires value"
+        return "error: select requires value"
 
     try:
         driver = await get_driver()
         await driver.ensure()
     except BrowserUnavailable as exc:
-        return str(exc)
+        return f"error: {exc}"
     page = driver.page
     assert page is not None
     cfg = driver.cfg

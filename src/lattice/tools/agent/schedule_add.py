@@ -10,7 +10,7 @@ from lattice.deps import TurnDeps, traced
 from lattice.scheduler.tools import schedule_add as _schedule_add
 from lattice.tools.agent._common import ToolsetT, ToolTier
 
-TIER = ToolTier.COLD
+TIER = ToolTier.EAGER
 
 
 def register(toolset: ToolsetT) -> dict[str, Any]:

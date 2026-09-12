@@ -34,7 +34,10 @@ async def test_schema_initialized_once_per_file(
     real = session_mod._ensure_column
 
     async def counting(conn, table, column, declaration):
-        calls["n"] += 1
+        # Count each schema-init round once, regardless of how many columns the
+        # DDL block ensures (actions_json and todos_json today).
+        if column == "actions_json":
+            calls["n"] += 1
         return await real(conn, table, column, declaration)
 
     fingerprint = {"v": (1, 1)}

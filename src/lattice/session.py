@@ -97,12 +97,14 @@ class SessionStore:
                 messages_json TEXT NOT NULL DEFAULT '[]',
                 usage_json TEXT NOT NULL DEFAULT '{}',
                 actions_json TEXT NOT NULL DEFAULT '[]',
+                todos_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
         await _ensure_column(conn, "sessions", "actions_json", "TEXT NOT NULL DEFAULT '[]'")
+        await _ensure_column(conn, "sessions", "todos_json", "TEXT NOT NULL DEFAULT '[]'")
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sticky_profiles (
@@ -155,8 +157,9 @@ class SessionStore:
                 await conn.execute(
                     """
                     INSERT INTO sessions
-                    (id, profile_id, user_id, channel, parent_id, title, messages_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?)
+                    (id, profile_id, user_id, channel, parent_id, title, messages_json,
+                     todos_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?)
                     """,
                     (sid, profile_id, user_id, channel, parent_id, None, now, now),
                 )
@@ -177,6 +180,7 @@ class SessionStore:
             data["messages"] = json.loads(data.pop("messages_json") or "[]")
             data["usage"] = json.loads(data.pop("usage_json") or "{}")
             data["actions"] = json.loads(data.pop("actions_json") or "[]")
+            data["todos"] = json.loads(data.pop("todos_json") or "[]")
             return data
         finally:
             await conn.close()
@@ -276,6 +280,36 @@ class SessionStore:
                 await conn.execute(
                     "UPDATE sessions SET actions_json = ?, updated_at = ? WHERE id = ?",
                     (json.dumps(existing, ensure_ascii=False), now, session_id),
+                )
+                await conn.commit()
+            finally:
+                await conn.close()
+
+    async def save_todos(self, session_id: str, todos: list[Any]) -> None:
+        """Replace the session's todo list, skipping the write when unchanged.
+
+        ``todos`` may be ``TodoItem`` models or plain dicts. The read-modify-write
+        shares the per-session lock so a turn cannot clobber a concurrent one.
+        """
+        payload = [
+            item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in todos
+        ]
+        serialized = json.dumps(payload, ensure_ascii=False)
+        async with _session_lock(session_id), _LOCK:
+            conn = await self.connect()
+            try:
+                conn.row_factory = aiosqlite.Row
+                cur = await conn.execute(
+                    "SELECT todos_json FROM sessions WHERE id = ?", (session_id,)
+                )
+                row = await cur.fetchone()
+                existing = (row["todos_json"] if row and row["todos_json"] else "[]") or "[]"
+                if existing == serialized:
+                    return
+                now = datetime.now(UTC).isoformat()
+                await conn.execute(
+                    "UPDATE sessions SET todos_json = ?, updated_at = ? WHERE id = ?",
+                    (serialized, now, session_id),
                 )
                 await conn.commit()
             finally:

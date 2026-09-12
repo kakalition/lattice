@@ -22,7 +22,7 @@ def fence_untrusted(label: str, body: str) -> str:
 
 async def web_search(query: str, *, api_key: str | None, max_results: int = 5) -> str:
     if not api_key:
-        return "web_search unavailable: set tavily_api_key / LATTICE_TAVILY_API_KEY"
+        return "error: web_search unavailable: set tavily_api_key / LATTICE_TAVILY_API_KEY"
     payload = {"api_key": api_key, "query": query, "max_results": max_results}
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post("https://api.tavily.com/search", json=payload)

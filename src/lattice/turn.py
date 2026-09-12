@@ -62,6 +62,7 @@ from lattice.skills import scan_skills_for, skill_index_entries
 from lattice.sqlite import SqlitePool, SqliteRegistry
 from lattice.timeutil import resolve_timezone
 from lattice.tools.deadline import with_deadline
+from lattice.tools.todo import TodoList
 from lattice.tools.user_tools import scan_user_tools
 from lattice.turn_record import ContextRecord, TurnOutcome
 from lattice.turn_trace import LoggingTurnEvents, new_turn_id
@@ -233,6 +234,7 @@ async def run_turn(
     await events.on_status("loading session")
     existing = await store.get(session_id)
     messages: list[dict[str, Any]] = sanitize_messages(existing["messages"] if existing else [])
+    todos = TodoList.from_items(existing.get("todos") if existing else None)
     context_record = ContextRecord(before_messages=len(messages))
 
     sticky_model = await store.get_sticky_primary_model(inbound.channel, inbound.user_id)
@@ -329,6 +331,7 @@ async def run_turn(
                 aux=aux,
                 protect_last_n=settings.agent.protect_last_n,
                 pressure=pressure,
+                force=True,
             )
         if result.compressed:
             notices.append("Context was compressed; older turns summarized.")
@@ -342,6 +345,14 @@ async def run_turn(
                 parent_id=parent_id,
             )
             messages = result.messages
+            # The child session starts empty, so persist the compressed transcript
+            # directly and carry the ledger/todos forward; otherwise the summary is
+            # lost on the next turn.
+            await store.save_messages(session_id, messages)
+            if existing and existing.get("actions"):
+                await store.append_actions(session_id, existing["actions"])
+            if todos.items:
+                await store.save_todos(session_id, todos.items)
 
     tz_name = resolve_timezone(settings.home, explicit=settings.timezone)
     try:
@@ -361,9 +372,13 @@ async def run_turn(
     if action_notice:
         notices.append(action_notice)
     if settings.agent.replay_evidence:
-        evidence_notice = build_evidence_notice(existing.get("actions") if existing else None)
+        evidence_notice = build_evidence_notice(
+            existing.get("actions") if existing else None, limit=6, max_bytes=3000
+        )
         if evidence_notice:
             notices.append(evidence_notice)
+    if todos.items:
+        notices.append("Todos:\n" + todos.render())
     # Cheap discovery facts so the model skips its own ls/find/schema warm-up;
     # built concurrently with the other prefetch work above.
     if workspace_context:
@@ -426,6 +441,7 @@ async def run_turn(
         user_id=inbound.user_id,
         channel=inbound.channel,
         turn_id=turn_id,
+        todos=todos,
     )
 
     messages.append({"role": "user", "content": user_content})
@@ -595,6 +611,17 @@ async def run_turn(
                         retries += 1
                         continue
                     if action == "compress":
+                        if trace.tool_calls:
+                            # Tools already ran this attempt; replaying the turn
+                            # after a compress would repeat their side effects.
+                            outcome = TurnOutcome.ERROR
+                            err = str(exc)
+                            text = (
+                                "I hit a context-overflow after running tools. "
+                                "To avoid repeating side effects I stopped here — ask me "
+                                "to continue and I'll pick up from where I left off."
+                            )
+                            break
                         enqueue_sync(
                             memory,
                             messages,
@@ -623,6 +650,10 @@ async def run_turn(
                             deps.session_id = session_id
                             _rebuild_history()
                             await store.save_messages(session_id, messages)
+                            if existing and existing.get("actions"):
+                                await store.append_actions(session_id, existing["actions"])
+                            if todos.items:
+                                await store.save_todos(session_id, todos.items)
                         retries += 1
                         if retries < 3:
                             continue
@@ -668,6 +699,9 @@ async def run_turn(
         if actions:
             with contextlib.suppress(Exception):
                 await store.append_actions(session_id, actions)
+        # Todos are best-effort state: never let persistence fail a turn.
+        with contextlib.suppress(Exception):
+            await store.save_todos(session_id, deps.todos.items)
         trace.log_end(
             outbound_text=text or "",
             error=err,

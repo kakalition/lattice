@@ -27,8 +27,19 @@ def _resolve(path: str, workspace: Path, home: Path | None) -> Path:
     )
 
 
-def _head_text(path: Path, text: str) -> str:
+def _head_text(path: Path, text: str, *, offset: int = 0, limit: int = 0) -> str:
     lines = text.splitlines()
+    if offset or limit:
+        # Explicit range: return exactly the requested slice and label it. The
+        # header is only added for ranged reads so default output stays identical.
+        start = max(0, offset)
+        end = start + limit if limit and limit > 0 else len(lines)
+        shown = lines[start:end]
+        if not shown:
+            return f"[showing lines 0-0 of {len(lines)}]"
+        return f"[showing lines {start + 1}-{start + len(shown)} of {len(lines)}]\n" + "\n".join(
+            shown
+        )
     if len(text) <= READ_MAX_BYTES and len(lines) <= READ_MAX_LINES:
         return text
     shown = lines[:READ_MAX_LINES]
@@ -41,10 +52,17 @@ def _head_text(path: Path, text: str) -> str:
     return "\n".join(shown) + f"\n\n{hint}"
 
 
-async def read_file(path: str, *, workspace: Path, home: Path | None = None) -> str:
+async def read_file(
+    path: str,
+    *,
+    workspace: Path,
+    home: Path | None = None,
+    offset: int = 0,
+    limit: int = 0,
+) -> str:
     target = _resolve(path, workspace, home)
     text = await asyncio.to_thread(target.read_text, encoding="utf-8")
-    return _head_text(target, text)
+    return _head_text(target, text, offset=offset, limit=limit)
 
 
 async def write_file(path: str, content: str, *, workspace: Path, home: Path | None = None) -> str:
@@ -118,9 +136,19 @@ async def _run_syntax_cmd(cmd: list[str]) -> str:
     return "compile error: " + (detail[:500] or f"exit={proc.returncode}")
 
 
+SEARCH_MAX_MATCHES = 50
+
+
 async def search_files(pattern: str, *, workspace: Path, glob: str = "**/*") -> str:
+    """Find a literal substring across workspace files.
+
+    ``pattern`` is a *literal substring* (not a regex). Content matches are
+    returned as ``path:line: text``; a file whose relative path contains the
+    pattern is returned as just its path. Results are capped.
+    """
+    if not pattern:
+        return "(empty pattern)"
     workspace = workspace.resolve()
-    matches: list[str] = []
 
     def _search() -> list[str]:
         out: list[str] = []
@@ -128,14 +156,23 @@ async def search_files(pattern: str, *, workspace: Path, glob: str = "**/*") -> 
             if not path.is_file():
                 continue
             try:
+                rel = path.relative_to(workspace)
+            except ValueError:
+                continue
+            # Name/path matches keep the filename-only form.
+            if pattern in str(rel):
+                out.append(str(rel))
+                if len(out) >= SEARCH_MAX_MATCHES:
+                    return out
+            try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            if pattern in text:
-                rel = path.relative_to(workspace)
-                out.append(str(rel))
-                if len(out) >= 50:
-                    break
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if pattern in line:
+                    out.append(f"{rel}:{lineno}: {line.strip()[:200]}")
+                    if len(out) >= SEARCH_MAX_MATCHES:
+                        return out
         return out
 
     matches = await asyncio.to_thread(_search)

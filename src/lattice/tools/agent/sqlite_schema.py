@@ -8,9 +8,9 @@ from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
 from lattice.sqlite import sqlite_schema as _sqlite_schema
-from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.agent._common import ToolsetT, ToolTier
 
-TIER = ToolTier.COLD
+TIER = ToolTier.EAGER
 
 
 def register(toolset: ToolsetT) -> dict[str, Any]:

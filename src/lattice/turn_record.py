@@ -33,6 +33,9 @@ class ToolRecord(BaseModel):
     ok: bool
     result_bytes: int
     truncated: bool
+    # Clipped call operands, so an abort-path ledger record can name the file,
+    # query, or command that was in flight. Never the full argument body.
+    args: dict[str, str] = Field(default_factory=dict)
 
 
 class ContextRecord(BaseModel):

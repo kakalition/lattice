@@ -18,6 +18,9 @@ from lattice.tools.file_safety import resolve_agent_path
 
 LANG_EXTS = {"python": ".py", "node": ".js", "bash": ".sh"}
 LANG_BINARIES = {"python": ("python3", "python"), "node": ("node",), "bash": ("bash",)}
+# Generous ceiling; the harness truncates with head+tail + a scratch file, so a
+# small pre-slice here would only destroy a trailing traceback.
+SCRIPT_STREAM_MAX_CHARS = 1_000_000
 
 # Skill scripts persist global state under home (registry, jobs, profiles). Under
 # bwrap the home tree is not mounted, so these dirs are bound read-write for the
@@ -299,8 +302,8 @@ async def execute_script(
             )
             return ScriptResult(
                 exit_code=proc.returncode or 0,
-                stdout=out_b.decode("utf-8", errors="replace")[:50_000],
-                stderr=err_b.decode("utf-8", errors="replace")[:20_000],
+                stdout=out_b.decode("utf-8", errors="replace")[:SCRIPT_STREAM_MAX_CHARS],
+                stderr=err_b.decode("utf-8", errors="replace")[:SCRIPT_STREAM_MAX_CHARS],
                 sandbox=sandbox,
                 path=str(script_path),
             )
