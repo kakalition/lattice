@@ -7,16 +7,18 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.EAGER
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def todo(ctx: RunContext[TurnDeps], action: str, text: str = "", item_id: int = 0) -> str:
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def todo(
+        ctx: RunContext[TurnDeps], action: str, text: str = "", item_id: int = 0
+    ) -> str:
         """In-session scratch checklist only — does NOT fire at a time.
         For timed reminders use schedule_add (run_at or cron)."""
-        if err := not_allowed(ctx, "todo"):
-            return err
 
         def _op() -> str:
             if action == "add":

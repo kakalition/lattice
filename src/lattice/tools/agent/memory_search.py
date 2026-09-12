@@ -7,17 +7,17 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.memory.tools import memory_search
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.memory.tools import memory_search as _memory_search
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.EAGER
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def memory_search_tool(ctx: RunContext[TurnDeps], query: str) -> str:
-        if err := not_allowed(ctx, "memory_search"):
-            return err
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def memory_search(ctx: RunContext[TurnDeps], query: str) -> str:
         return await traced(
-            ctx, "memory_search", {"query": query}, lambda: memory_search(ctx.deps.memory, query)
+            ctx, "memory_search", {"query": query}, lambda: _memory_search(ctx.deps.memory, query)
         )
 
-    return {"memory_search": memory_search_tool}
+    return {"memory_search": memory_search}

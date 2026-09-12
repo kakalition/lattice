@@ -7,13 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.browser import browser_interact
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.browser import browser_interact as _browser_interact
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def browser_interact_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def browser_interact(
         ctx: RunContext[TurnDeps],
         action: str,
         selector: str | None = None,
@@ -28,8 +30,6 @@ def register(agent: AgentT) -> dict[str, Any]:
         Prefer browser_snapshot before click/type to discover selectors.
         Use web_fetch for static HTML instead.
         """
-        if err := not_allowed(ctx, "browser_interact"):
-            return err
         return await traced(
             ctx,
             "browser_interact",
@@ -39,7 +39,7 @@ def register(agent: AgentT) -> dict[str, Any]:
                 "url": url,
                 "timeout_ms": timeout_ms,
             },
-            lambda: browser_interact(
+            lambda: _browser_interact(
                 action,
                 selector=selector,
                 value=value,
@@ -48,4 +48,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             ),
         )
 
-    return {"browser_interact": browser_interact_tool}
+    return {"browser_interact": browser_interact}

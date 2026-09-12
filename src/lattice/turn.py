@@ -199,6 +199,7 @@ async def run_turn(
         profile,
         system_prompt=system_prompt,
         model=model or build_openai_model(settings, primary_id),
+        mcp=mcp,
     )
 
     async def _run_once(model_override: str | None = None) -> str:
@@ -214,7 +215,7 @@ async def run_turn(
 
             s2 = deepcopy(settings)
             s2.agent.primary_model = model_override
-            local_agent = create_agent(s2, profile, system_prompt=system_prompt)
+            local_agent = create_agent(s2, profile, system_prompt=system_prompt, mcp=mcp)
             result = await local_agent.run(run_user_prompt, **kwargs)
             return str(result.output)
         result = await agent.run(run_user_prompt, **kwargs)

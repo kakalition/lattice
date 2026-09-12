@@ -9,7 +9,7 @@ import pytest
 from lattice.config import ScriptsConfig
 from lattice.deps import CORE_TOOL_NAMES
 from lattice.hitl.policies import tool_needs_approval
-from lattice.tools.agent import register_all
+from lattice.tools.agent import tool_functions
 from lattice.tools.metrics import metric_log, metric_query
 from lattice.tools.script import (
     build_bwrap_command,
@@ -26,13 +26,10 @@ def test_core_tools_include_metrics_and_script() -> None:
     assert "execute_script" in CORE_TOOL_NAMES
 
 
-def test_register_all_includes_new_tools() -> None:
-    from pydantic_ai import Agent
+def test_build_toolsets_includes_new_tools() -> None:
+    from lattice.tools.agent import tool_functions
 
-    from lattice.deps import TurnDeps
-
-    agent: Agent[TurnDeps, str] = Agent("test", deps_type=TurnDeps, system_prompt="x")
-    mapping = register_all(agent)
+    mapping = tool_functions()
     assert set(CORE_TOOL_NAMES) <= set(mapping)
 
 

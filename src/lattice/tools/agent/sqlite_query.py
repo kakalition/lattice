@@ -7,20 +7,20 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.sqlite import sqlite_query
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.sqlite import sqlite_query as _sqlite_query
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.EAGER
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def sqlite_query_tool(ctx: RunContext[TurnDeps], name: str, sql: str) -> str:
-        if err := not_allowed(ctx, "sqlite_query"):
-            return err
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def sqlite_query(ctx: RunContext[TurnDeps], name: str, sql: str) -> str:
         return await traced(
             ctx,
             "sqlite_query",
             {"name": name, "sql": sql},
-            lambda: sqlite_query(
+            lambda: _sqlite_query(
                 ctx.deps.sqlite_pool,
                 name,
                 sql,
@@ -29,4 +29,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             ),
         )
 
-    return {"sqlite_query": sqlite_query_tool}
+    return {"sqlite_query": sqlite_query}

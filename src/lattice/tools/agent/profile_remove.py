@@ -9,14 +9,14 @@ from pydantic_ai import RunContext
 from lattice.audit import audit_log
 from lattice.deps import TurnDeps, maybe_approve, traced
 from lattice.profiles.store import remove_profile
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def profile_remove_tool(ctx: RunContext[TurnDeps], profile_id: str) -> str:
-        if err := not_allowed(ctx, "profile_remove"):
-            return err
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def profile_remove(ctx: RunContext[TurnDeps], profile_id: str) -> str:
         denied = await maybe_approve(
             ctx, "profile_remove", f"remove profile {profile_id}", profile_id=profile_id
         )
@@ -28,7 +28,7 @@ def register(agent: AgentT) -> dict[str, Any]:
                 remove_profile(profile_id, ctx.deps.settings.home)
             except (ValueError, FileNotFoundError) as exc:
                 return f"error: {exc}"
-            cleared = await ctx.deps.store.clear_sticky_for_profile(profile_id)
+            cleared = await ctx.deps.session.clear_sticky_for_profile(profile_id)
             audit_log(
                 "tool",
                 {"name": "profile_remove", "profile_id": profile_id, "sticky_cleared": cleared},
@@ -41,4 +41,4 @@ def register(agent: AgentT) -> dict[str, Any]:
 
         return await traced(ctx, "profile_remove", {"profile_id": profile_id}, _op)
 
-    return {"profile_remove": profile_remove_tool}
+    return {"profile_remove": profile_remove}

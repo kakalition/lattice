@@ -1,11 +1,20 @@
-"""Pydantic-AI tool bindings — one module per CORE tool name."""
+"""Pydantic-AI tool bindings — one module per CORE tool name.
+
+Each module registers exactly one tool under its policy name and declares a
+default ``TIER``. This package partitions the tools into an eager toolset (sent
+on every request) and a cold toolset (deferred behind native tool search).
+"""
 
 from __future__ import annotations
 
+import fnmatch
 from typing import Any
 
+from pydantic_ai.toolsets import AbstractToolset, DeferredLoadingToolset, FunctionToolset
+
+from lattice.config import ToolTier
 from lattice.deps import CORE_TOOL_NAMES
-from lattice.tools.agent._common import AgentT
+from lattice.tools.agent._common import ToolsetT
 
 from . import (
     browser_interact,
@@ -26,6 +35,7 @@ from . import (
     profile_list,
     profile_remove,
     read_file,
+    remove_path,
     schedule_add,
     schedule_cancel,
     schedule_list,
@@ -44,9 +54,6 @@ from . import (
     timezone_get,
     timezone_set,
     todo,
-    tool_describe,
-    tool_invoke,
-    tool_search,
     web_fetch,
     web_search,
     write_file,
@@ -57,6 +64,7 @@ _MODULES = [
     read_file,
     write_file,
     edit_file,
+    remove_path,
     search_files,
     ocr,
     generate_pdf,
@@ -92,9 +100,6 @@ _MODULES = [
     skill_view,
     profile_list,
     profile_remove,
-    tool_search,
-    tool_describe,
-    tool_invoke,
 ]
 
 
@@ -103,18 +108,82 @@ def _module_tool_name(mod: Any) -> str:
     return mod.__name__.rpartition(".")[2]
 
 
-def register_all(agent: AgentT, *, exclude: frozenset[str] = frozenset()) -> dict[str, Any]:
-    """Register every core tool on ``agent``; return policy-name → function map.
+def _matches(name: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
 
-    ``exclude`` names tools that must not be registered at all (the ``@agent.tool``
-    decorator registers eagerly, so excluded modules are skipped before calling).
-    """
+
+def resolve_tier(name: str, *, eager: list[str], cold: list[str]) -> ToolTier:
+    """Config globs override the module default; ``cold`` wins on conflict."""
+    if _matches(name, cold):
+        return ToolTier.COLD
+    if _matches(name, eager):
+        return ToolTier.EAGER
+    return _default_tiers()[name]
+
+
+def _default_tiers() -> dict[str, ToolTier]:
+    return {_module_tool_name(mod): mod.TIER for mod in _MODULES}
+
+
+def default_eager_names() -> list[str]:
+    """Tool names that ship eagerly with no config override."""
+    return [n for n, tier in _default_tiers().items() if tier is ToolTier.EAGER]
+
+
+def tool_functions(*, exclude: frozenset[str] = frozenset()) -> dict[str, Any]:
+    """Policy-name → function map for every registered tool (tests/introspection)."""
     mapping: dict[str, Any] = {}
     for mod in _MODULES:
-        if _module_tool_name(mod) in exclude:
+        name = _module_tool_name(mod)
+        if name in exclude:
             continue
-        mapping.update(mod.register(agent))
+        toolset: ToolsetT = FunctionToolset()
+        mapping.update(mod.register(toolset))
+    _check_complete(mapping, exclude=exclude)
+    return mapping
+
+
+def _check_complete(mapping: dict[str, Any], *, exclude: frozenset[str]) -> None:
     missing = [n for n in CORE_TOOL_NAMES if n not in mapping and n not in exclude]
     if missing:
         raise RuntimeError(f"tool registration missing: {missing}")
-    return mapping
+
+
+def build_toolsets(
+    *,
+    exclude: frozenset[str] = frozenset(),
+    eager: list[str] | None = None,
+    cold: list[str] | None = None,
+    defer_cold: bool = True,
+) -> list[AbstractToolset[Any]]:
+    """Build the eager toolset and (optionally deferred) cold toolset.
+
+    ``exclude`` names tools that must not be registered at all. ``eager``/``cold``
+    are fnmatch globs that override each module's default tier.
+    """
+    eager_globs = list(eager or [])
+    cold_globs = list(cold or [])
+
+    eager_toolset: ToolsetT = FunctionToolset()
+    cold_toolset: ToolsetT = FunctionToolset()
+    seen: dict[str, Any] = {}
+
+    for mod in _MODULES:
+        name = _module_tool_name(mod)
+        if name in exclude:
+            continue
+        target = (
+            cold_toolset
+            if resolve_tier(name, eager=eager_globs, cold=cold_globs) is ToolTier.COLD
+            else eager_toolset
+        )
+        seen.update(mod.register(target))
+
+    _check_complete(seen, exclude=exclude)
+
+    out: list[AbstractToolset[Any]] = [eager_toolset]
+    if cold_toolset.tools:
+        out.append(
+            DeferredLoadingToolset(cold_toolset) if defer_cold else cold_toolset
+        )
+    return out

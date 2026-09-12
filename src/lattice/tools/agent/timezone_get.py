@@ -7,18 +7,18 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.scheduler.tools import timezone_get
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.scheduler.tools import timezone_get as _timezone_get
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def timezone_get_tool(ctx: RunContext[TurnDeps]) -> str:
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def timezone_get(ctx: RunContext[TurnDeps]) -> str:
         """Show the remembered IANA timezone used for reminders."""
-        if err := not_allowed(ctx, "timezone_get"):
-            return err
         return await traced(
-            ctx, "timezone_get", {}, lambda: timezone_get(home=ctx.deps.settings.home)
+            ctx, "timezone_get", {}, lambda: _timezone_get(home=ctx.deps.settings.home)
         )
 
-    return {"timezone_get": timezone_get_tool}
+    return {"timezone_get": timezone_get}

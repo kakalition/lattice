@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING, Any
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
+from lattice.agent_app import build_core_toolset, tool_search_capability
 from lattice.config import LatticeSettings
 from lattice.deps import CORE_TOOL_NAMES
 from lattice.providers.openai_compat import build_openai_model
 from lattice.providers.settings import secondary_model_name
 from lattice.runtime import set_cwd
-from lattice.tools.agent import register_all
 from lattice.tools.deadline import with_deadline
 
 if TYPE_CHECKING:
@@ -39,14 +39,17 @@ def _build_secondary_agent(settings: LatticeSettings, model_id: str) -> Agent[An
         build_openai_model(settings, model_id),
         deps_type=TurnDeps,
         system_prompt=SECONDARY_SYSTEM_PROMPT,
+        capabilities=[tool_search_capability()],
     )
-    # Same capability surface as the primary (policy is enforced at call time).
-    register_all(agent, exclude=frozenset({"delegate"}))
     return agent
 
 
 def get_secondary_agent(settings: LatticeSettings) -> Agent[Any, str]:
-    """Reuse one Agent per secondary model id (stable tool schemas for caching)."""
+    """Reuse one Agent per secondary model id (stable tool schemas for caching).
+
+    Toolsets are supplied per run (see ``run_secondary``) so the worker gets the
+    same capability surface as the primary for that turn, minus ``delegate``.
+    """
     mid = secondary_model_name(settings)
     cached = _agent_cache.get(mid)
     if cached is not None:
@@ -79,8 +82,11 @@ async def run_secondary(
     settings = deps.settings
     model_id = secondary_model_name(settings, profile_secondary=deps.profile.secondary_model)
     agent = get_secondary_agent(settings)
-    # The primary's policy is the capability ceiling; `delegate` never propagates.
-    enabled_tools = [t for t in deps.enabled_tools if t != "delegate"]
+    # Same capability surface as the primary, minus the dispatch entry. The
+    # primary's policy remains the ceiling and is applied by the deps-driven filter.
+    toolsets = [
+        build_core_toolset(settings, deps.mcp, exclude=frozenset({"delegate"}))
+    ]
 
     secondary_deps = TD(
         settings=deps.settings,
@@ -97,7 +103,8 @@ async def run_secondary(
         workspace=deps.workspace,
         approval_memory=deps.approval_memory,
         consecutive_denials=deps.consecutive_denials,
-        enabled_tools=enabled_tools,
+        # The primary's policy is the ceiling; `delegate` never propagates.
+        enabled_tools=[n for n in deps.enabled_tools if n != "delegate"],
         skills=deps.skills,
         user_id=deps.user_id,
         channel=deps.channel,
@@ -116,6 +123,7 @@ async def run_secondary(
             deps=secondary_deps,
             usage_limits=limits,
             model=build_openai_model(settings, model_id),
+            toolsets=toolsets,
         )
         return truncate_result(str(result.output))
 

@@ -8,13 +8,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.chart import generate_chart
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.chart import generate_chart as _generate_chart
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def generate_chart_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def generate_chart(
         ctx: RunContext[TurnDeps],
         path: str,
         chart_type: str,
@@ -30,11 +32,9 @@ def register(agent: AgentT) -> dict[str, Any]:
          {"name":"Mobile","values":[8,14]}]}
         For pie/donut, one series of values matching labels (or one value per series).
         """
-        if err := not_allowed(ctx, "generate_chart"):
-            return err
 
         async def _op() -> str:
-            out = await generate_chart(
+            out = await _generate_chart(
                 path,
                 chart_type,
                 title,
@@ -63,4 +63,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             _op,
         )
 
-    return {"generate_chart": generate_chart_tool}
+    return {"generate_chart": generate_chart}

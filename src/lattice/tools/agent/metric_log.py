@@ -7,13 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.metrics import metric_log
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.metrics import metric_log as _metric_log
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def metric_log_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def metric_log(
         ctx: RunContext[TurnDeps],
         name: str,
         value: float,
@@ -23,13 +25,11 @@ def register(agent: AgentT) -> dict[str, Any]:
         at: str | None = None,
     ) -> str:
         """Record a personal metric point (habit, focus hours, mood, reps, …)."""
-        if err := not_allowed(ctx, "metric_log"):
-            return err
         return await traced(
             ctx,
             "metric_log",
             {"name": name, "value": value, "unit": unit, "at": at},
-            lambda: metric_log(
+            lambda: _metric_log(
                 name,
                 value,
                 unit=unit,
@@ -40,4 +40,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             ),
         )
 
-    return {"metric_log": metric_log_tool}
+    return {"metric_log": metric_log}

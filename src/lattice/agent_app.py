@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import ToolSearch
+from pydantic_ai.toolsets import AbstractToolset, CombinedToolset, FilteredToolset
 
 from lattice.config import LatticeSettings
 from lattice.deps import (  # noqa: F401 — re-export for existing imports
@@ -15,11 +18,12 @@ from lattice.deps import (  # noqa: F401 — re-export for existing imports
     truncate_result,
 )
 from lattice.mcp import McpHostManager, should_defer_mcp
+from lattice.mcp.toolset import McpToolset
 from lattice.memory import Memory, build_memory
 from lattice.profiles import Profile, merge_tool_policy
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers import build_openai_model
-from lattice.tools.agent import register_all
+from lattice.tools.agent import build_toolsets
 
 
 def build_prompt_bundle(
@@ -35,20 +39,86 @@ def build_prompt_bundle(
     )
 
 
+def filter_enabled(toolset: AbstractToolset[TurnDeps]) -> AbstractToolset[TurnDeps]:
+    """Hide tools the current turn's policy did not enable.
+
+    Filters per request (not at construction) so one Agent stays reusable across
+    profiles and channels. Replaces the old in-tool ``not_allowed`` check: a
+    disallowed tool is absent from the schema instead of erroring when called.
+    """
+
+    def _keep(ctx: Any, tool_def: Any) -> bool:
+        enabled = getattr(ctx.deps, "enabled_tools", None) or []
+        return tool_def.name in enabled
+
+    return FilteredToolset(toolset, _keep)
+
+
+def build_core_toolset(
+    settings: LatticeSettings,
+    mcp: McpHostManager,
+    *,
+    exclude: frozenset[str] = frozenset(),
+    filter_policy: bool = True,
+) -> AbstractToolset[TurnDeps]:
+    """Tiered core tools (eager + deferred cold), plus discovered MCP tools."""
+    toolsets: list[AbstractToolset[TurnDeps]] = list(
+        build_toolsets(
+            exclude=exclude,
+            eager=settings.tools.eager,
+            cold=settings.tools.cold,
+            defer_cold=True,
+        )
+    )
+    if mcp.enabled_tools():
+        mcp_toolset: AbstractToolset[TurnDeps] = McpToolset(mcp)
+        if should_defer_mcp(mcp, settings.tools):
+            from pydantic_ai.toolsets import DeferredLoadingToolset
+
+            mcp_toolset = DeferredLoadingToolset(mcp_toolset)
+        toolsets.append(mcp_toolset)
+
+    combined: AbstractToolset[TurnDeps] = (
+        CombinedToolset(toolsets) if len(toolsets) > 1 else toolsets[0]
+    )
+    return filter_enabled(combined) if filter_policy else combined
+
+
+def tool_search_capability() -> Any:
+    """Force the local ``search_tools`` fallback.
+
+    The capability is auto-injected, but on providers without a native tool-search
+    surface (OpenAI chat completions) the default strategy emits no discovery tool
+    at all, leaving deferred tools unreachable. Pinning ``keywords`` guarantees a
+    callable ``search_tools`` function on every provider.
+    """
+    return ToolSearch(strategy="keywords")
+
+
 def create_agent(
     settings: LatticeSettings,
     profile: Profile,
     *,
     system_prompt: str,
     model: Any | None = None,
+    mcp: McpHostManager | None = None,
+    exclude: frozenset[str] = frozenset(),
+    toolsets: Sequence[AbstractToolset[TurnDeps]] | None = None,
 ) -> Agent[TurnDeps, str]:
     from lattice.providers.settings import resolve_model_id
 
     primary = profile.primary_model or profile.model
     resolved = model or build_openai_model(settings, resolve_model_id(settings, profile_model=primary))
-    agent: Agent[TurnDeps, str] = Agent(resolved, deps_type=TurnDeps, system_prompt=system_prompt)
-    agent.tool_functions = register_all(agent)  # type: ignore[attr-defined]
-    return agent
+    built = list(toolsets) if toolsets is not None else [
+        build_core_toolset(settings, mcp or McpHostManager(), exclude=exclude)
+    ]
+    return Agent(
+        resolved,
+        deps_type=TurnDeps,
+        system_prompt=system_prompt,
+        toolsets=built,
+        capabilities=[tool_search_capability()],
+    )
 
 
 def resolve_enabled_tools(
@@ -59,13 +129,8 @@ def resolve_enabled_tools(
     mcp: McpHostManager,
 ) -> list[str]:
     channel_cfg = settings.telegram.tools if channel == "telegram" else settings.tools
-    names = list(CORE_TOOL_NAMES)
-    if not should_defer_mcp(mcp, settings.tools) and not mcp.enabled_tools():
-        names = [n for n in names if n not in {"tool_search", "tool_describe", "tool_invoke"}]
-    elif not mcp.enabled_tools():
-        names = [n for n in names if n not in {"tool_search", "tool_describe", "tool_invoke"}]
     return merge_tool_policy(
-        names,
+        list(CORE_TOOL_NAMES),
         profile_allow=profile.tools_allow,
         profile_deny=profile.tools_deny,
         channel_allow=channel_cfg.allow if hasattr(channel_cfg, "allow") else settings.tools.allow,

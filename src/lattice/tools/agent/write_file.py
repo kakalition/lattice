@@ -7,15 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, maybe_approve, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.file import write_file
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.file import write_file as _write_file
+
+TIER = ToolTier.EAGER
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def write_file_tool(ctx: RunContext[TurnDeps], path: str, content: str) -> str:
-        if err := not_allowed(ctx, "write_file"):
-            return err
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def write_file(ctx: RunContext[TurnDeps], path: str, content: str) -> str:
         denied = await maybe_approve(ctx, "write_file", path, path=path)
         if denied:
             return denied
@@ -23,9 +23,9 @@ def register(agent: AgentT) -> dict[str, Any]:
             ctx,
             "write_file",
             {"path": path, "content": content},
-            lambda: write_file(
+            lambda: _write_file(
                 path, content, workspace=ctx.deps.workspace, home=ctx.deps.settings.home
             ),
         )
 
-    return {"write_file": write_file_tool}
+    return {"write_file": write_file}

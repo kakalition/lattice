@@ -7,17 +7,17 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, maybe_approve, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.file import edit_file
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.file import edit_file as _edit_file
+
+TIER = ToolTier.EAGER
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def edit_file_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def edit_file(
         ctx: RunContext[TurnDeps], path: str, old_string: str, new_string: str
     ) -> str:
-        if err := not_allowed(ctx, "edit_file"):
-            return err
         denied = await maybe_approve(ctx, "edit_file", path, path=path)
         if denied:
             return denied
@@ -25,7 +25,7 @@ def register(agent: AgentT) -> dict[str, Any]:
             ctx,
             "edit_file",
             {"path": path, "old_string": old_string, "new_string": new_string},
-            lambda: edit_file(
+            lambda: _edit_file(
                 path,
                 old_string,
                 new_string,
@@ -34,4 +34,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             ),
         )
 
-    return {"edit_file": edit_file_tool}
+    return {"edit_file": edit_file}

@@ -7,13 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.scheduler.tools import schedule_add
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.scheduler.tools import schedule_add as _schedule_add
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def schedule_add_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def schedule_add(
         ctx: RunContext[TurnDeps],
         reminder: str,
         run_at: str = "",
@@ -28,8 +30,6 @@ def register(agent: AgentT) -> dict[str, Any]:
         Never pass timezone='' to force UTC; omit timezone to use config. Do not ask the
         user for timezone unless they want to change it (use timezone_set).
         Prefer this over todo for anything time-based. deliver=telegram|cli|none."""
-        if err := not_allowed(ctx, "schedule_add"):
-            return err
         tz = timezone or ctx.deps.settings.timezone
         return await traced(
             ctx,
@@ -42,7 +42,7 @@ def register(agent: AgentT) -> dict[str, Any]:
                 "deliver": deliver,
                 "job_id": job_id,
             },
-            lambda: schedule_add(
+            lambda: _schedule_add(
                 reminder=reminder,
                 home=ctx.deps.settings.home,
                 run_at=run_at,
@@ -54,4 +54,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             ),
         )
 
-    return {"schedule_add": schedule_add_tool}
+    return {"schedule_add": schedule_add}

@@ -7,20 +7,20 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.memory.tools import memory_update
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.memory.tools import memory_update as _memory_update
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def memory_update_tool(ctx: RunContext[TurnDeps], memory_id: str, text: str) -> str:
-        if err := not_allowed(ctx, "memory_update"):
-            return err
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def memory_update(ctx: RunContext[TurnDeps], memory_id: str, text: str) -> str:
         return await traced(
             ctx,
             "memory_update",
             {"memory_id": memory_id, "text": text},
-            lambda: memory_update(ctx.deps.memory, memory_id, text),
+            lambda: _memory_update(ctx.deps.memory, memory_id, text),
         )
 
-    return {"memory_update": memory_update_tool}
+    return {"memory_update": memory_update}

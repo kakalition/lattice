@@ -212,26 +212,43 @@ def test_secondary_refuses_nested_delegate(tmp_path: Path) -> None:
 
 
 def test_secondary_registers_all_primary_tools_except_delegate() -> None:
-    from pydantic_ai import Agent
-
     from lattice.agents.secondary import SECONDARY_TOOL_NAMES, _build_secondary_agent
     from lattice.config import LatticeSettings
     from lattice.deps import CORE_TOOL_NAMES
-    from lattice.tools.agent import register_all
+    from lattice.tools.agent import build_toolsets, tool_functions
 
-    primary = Agent("test")
-    primary_map = register_all(primary)
+    primary_map = tool_functions()
     assert set(primary_map) == set(CORE_TOOL_NAMES)
     assert set(primary_map) - {"delegate"} == set(SECONDARY_TOOL_NAMES)
 
     settings = LatticeSettings(home=Path("/tmp/lattice-secondary-parity"))
     secondary = _build_secondary_agent(settings, "test")
-    secondary_tools = set(secondary._function_toolset.tools.keys())
-    primary_tool_fns = {f.__name__ for f in primary_map.values()}
+    # The worker builds its toolsets per run (applying the primary's policy
+    # ceiling), so no core tool is registered on the agent at construction time.
+    builtin: set[str] = set()
+    for ts in secondary.toolsets:
+        builtin |= set(getattr(ts, "tools", {}).keys())
+    assert not (builtin & set(CORE_TOOL_NAMES))
 
-    # Same capability surface as the primary, minus the dispatch entry.
-    assert secondary_tools == primary_tool_fns - {"delegate_tool"}
-    assert "delegate" not in secondary_tools
+    # Names on the wire are the policy names (no `_tool` suffix).
+    names = set(tool_functions(exclude=frozenset({"delegate"})))
+    assert "read_file" in names
+    assert "read_file_tool" not in names
+    assert "delegate" not in names
+    assert names == set(SECONDARY_TOOL_NAMES)
+
+    # The toolset tree exposes exactly those names, eager and deferred alike.
+    on_wire: set[str] = set()
+
+    def _collect(ts: object) -> None:
+        inner = getattr(ts, "wrapped", None)
+        if inner is not None:
+            _collect(inner)
+        on_wire.update(getattr(ts, "tools", {}).keys())
+
+    for ts in build_toolsets(exclude=frozenset({"delegate"})):
+        _collect(ts)
+    assert on_wire == set(SECONDARY_TOOL_NAMES)
 
 
 def test_secondary_enabled_tools_derive_from_primary_policy() -> None:
@@ -309,7 +326,7 @@ def test_secondary_enabled_tools_derive_from_primary_policy() -> None:
 def test_secondary_gated_tool_is_hitl_gated_when_enabled(tmp_path: Path) -> None:
     import asyncio
 
-    from pydantic_ai import Agent, RunContext
+    from pydantic_ai import RunContext
 
     from lattice.agent_app import TurnDeps
     from lattice.config import LatticeSettings
@@ -319,7 +336,7 @@ def test_secondary_gated_tool_is_hitl_gated_when_enabled(tmp_path: Path) -> None
     from lattice.profiles.load import Profile
     from lattice.session import SessionStore
     from lattice.sqlite import SqlitePool, SqliteRegistry
-    from lattice.tools.agent import register_all
+    from lattice.tools.agent import tool_functions
 
     class _Mem:
         async def search(self, *a, **k):
@@ -364,7 +381,7 @@ def test_secondary_gated_tool_is_hitl_gated_when_enabled(tmp_path: Path) -> None
         enabled_tools=["sqlite_unregister"],
     )
     ctx = RunContext(deps=deps, model=None, usage=None, prompt=None)  # type: ignore[arg-type]
-    tool = register_all(Agent("test"), exclude=frozenset({"delegate"}))["sqlite_unregister"]
+    tool = tool_functions(exclude=frozenset({"delegate"}))["sqlite_unregister"]
     out = asyncio.run(tool(ctx, "notes"))
     assert out == "denied: deny"
     assert hitl.seen == ["sqlite_unregister"]

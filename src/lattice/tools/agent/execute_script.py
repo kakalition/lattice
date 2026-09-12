@@ -7,9 +7,11 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, maybe_approve, traced, truncate_result
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.tools.agent._common import ToolTier, ToolsetT
 from lattice.tools.file_safety import resolve_agent_path
-from lattice.tools.script import execute_script, format_script_result
+from lattice.tools.script import execute_script as _execute_script, format_script_result
+
+TIER = ToolTier.COLD
 
 
 def _script_body_for_policy(
@@ -32,9 +34,9 @@ def _script_body_for_policy(
     return path
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def execute_script_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def execute_script(
         ctx: RunContext[TurnDeps],
         language: str,
         code: str | None = None,
@@ -47,8 +49,6 @@ def register(agent: AgentT) -> dict[str, Any]:
         HITL only for dangerous patterns (subprocess/rm/network/eval/…).
         Network stays off unless scripts.allow_network is true.
         """
-        if err := not_allowed(ctx, "execute_script"):
-            return err
         body = _script_body_for_policy(
             code=code,
             path=path,
@@ -69,7 +69,7 @@ def register(agent: AgentT) -> dict[str, Any]:
 
         async def _op() -> str:
             try:
-                result = await execute_script(
+                result = await _execute_script(
                     language=language,
                     code=code,
                     path=path,
@@ -89,4 +89,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             _op,
         )
 
-    return {"execute_script": execute_script_tool}
+    return {"execute_script": execute_script}

@@ -8,13 +8,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.pdf import generate_pdf
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.pdf import generate_pdf as _generate_pdf
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def generate_pdf_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def generate_pdf(
         ctx: RunContext[TurnDeps],
         path: str,
         title: str,
@@ -28,11 +30,9 @@ def register(agent: AgentT) -> dict[str, Any]:
         Example table block:
         {"type":"table","headers":["A","B"],"rows":[["1","2"]]}
         """
-        if err := not_allowed(ctx, "generate_pdf"):
-            return err
 
         async def _op() -> str:
-            out = await generate_pdf(
+            out = await _generate_pdf(
                 path,
                 title,
                 content,
@@ -59,4 +59,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             _op,
         )
 
-    return {"generate_pdf": generate_pdf_tool}
+    return {"generate_pdf": generate_pdf}

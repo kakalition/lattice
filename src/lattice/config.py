@@ -19,6 +19,13 @@ class McpDeferMode(StrEnum):
     NEVER = "never"
 
 
+class ToolTier(StrEnum):
+    """How a tool reaches the model: always on the wire, or hidden behind tool search."""
+
+    EAGER = "eager"
+    COLD = "cold"
+
+
 class SqliteDatabaseConfig(BaseModel):
     path: str
     read_only: bool = False
@@ -38,6 +45,10 @@ class ToolsConfig(BaseModel):
     deny: list[str] = Field(default_factory=list)
     mcp_defer: McpDeferMode = McpDeferMode.AUTO
     mcp_defer_threshold: int = 8
+    # fnmatch globs matched against tool names; override each module's default TIER.
+    # ``cold`` wins when a name matches both.
+    eager: list[str] = Field(default_factory=list)
+    cold: list[str] = Field(default_factory=list)
 
 
 class ChannelToolsConfig(BaseModel):
@@ -274,6 +285,10 @@ tools:
   allow: ["*"]
   deny: []
   mcp_defer: auto
+  # Optional: override which tools ship eagerly vs. behind tool search.
+  # Glob patterns; `cold` wins on conflict. Empty = use each tool's built-in tier.
+  eager: []   # e.g. ["web_*", "sqlite_*"]
+  cold: []    # e.g. ["browser_*", "metric_*"]
 
 browser:
   channel: auto          # auto | chrome | chromium (auto prefers system Chrome)

@@ -44,5 +44,19 @@ class McpHostManager:
     def enabled_tools(self) -> list[McpToolInfo]:
         return list(self.tools)
 
+    def call(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+        """Invoke a discovered tool.
+
+        No live MCP session exists in this build, so calls report not-connected
+        rather than silently succeeding.
+        """
+        for t in self.tools:
+            if t.name == name or f"{t.server}/{t.name}" == name:
+                return (
+                    f"MCP invoke stub for {t.server}/{t.name} args={arguments or {}}. "
+                    "Connect a live MCP session to execute."
+                )
+        return f"unknown mcp tool: {name}"
+
     async def close(self) -> None:
         return None

@@ -7,13 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, maybe_approve, traced
-from lattice.sqlite import sqlite_execute
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.sqlite import sqlite_execute as _sqlite_execute
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def sqlite_execute_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def sqlite_execute(
         ctx: RunContext[TurnDeps], name: str, sql: str, dry_run: bool = False
     ) -> str:
         """Run write SQL (DDL/DML) against a named database.
@@ -23,8 +25,6 @@ def register(agent: AgentT) -> dict[str, Any]:
         INTEGER PRIMARY KEY for rowid-optimized storage, and add indexes only on
         columns you actually filter by (extra indexes slow writes down).
         """
-        if err := not_allowed(ctx, "sqlite_execute"):
-            return err
         denied = await maybe_approve(
             ctx, "sqlite_execute", f"{name}: {sql[:120]}", name=name, sql=sql
         )
@@ -34,7 +34,7 @@ def register(agent: AgentT) -> dict[str, Any]:
             ctx,
             "sqlite_execute",
             {"name": name, "sql": sql, "dry_run": dry_run},
-            lambda: sqlite_execute(
+            lambda: _sqlite_execute(
                 ctx.deps.sqlite_pool,
                 name,
                 sql,
@@ -43,4 +43,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             ),
         )
 
-    return {"sqlite_execute": sqlite_execute_tool}
+    return {"sqlite_execute": sqlite_execute}

@@ -7,20 +7,20 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.sqlite import sqlite_backup
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.sqlite import sqlite_backup as _sqlite_backup
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def sqlite_backup_tool(ctx: RunContext[TurnDeps], name: str) -> str:
-        if err := not_allowed(ctx, "sqlite_backup"):
-            return err
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def sqlite_backup(ctx: RunContext[TurnDeps], name: str) -> str:
         return await traced(
             ctx,
             "sqlite_backup",
             {"name": name},
-            lambda: sqlite_backup(ctx.deps.sqlite_registry, name, ctx.deps.profile.sqlite_allow),
+            lambda: _sqlite_backup(ctx.deps.sqlite_registry, name, ctx.deps.profile.sqlite_allow),
         )
 
-    return {"sqlite_backup": sqlite_backup_tool}
+    return {"sqlite_backup": sqlite_backup}

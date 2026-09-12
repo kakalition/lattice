@@ -7,15 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.web import web_fetch
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.web import web_fetch as _web_fetch
+
+TIER = ToolTier.EAGER
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def web_fetch_tool(ctx: RunContext[TurnDeps], url: str) -> str:
-        if err := not_allowed(ctx, "web_fetch"):
-            return err
-        return await traced(ctx, "web_fetch", {"url": url}, lambda: web_fetch(url))
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def web_fetch(ctx: RunContext[TurnDeps], url: str) -> str:
+        return await traced(ctx, "web_fetch", {"url": url}, lambda: _web_fetch(url))
 
-    return {"web_fetch": web_fetch_tool}
+    return {"web_fetch": web_fetch}

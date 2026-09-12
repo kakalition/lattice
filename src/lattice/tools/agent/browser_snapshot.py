@@ -7,13 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.browser import browser_snapshot
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.browser import browser_snapshot as _browser_snapshot
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def browser_snapshot_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def browser_snapshot(
         ctx: RunContext[TurnDeps],
         mode: str = "a11y",
         max_chars: int = 30_000,
@@ -23,13 +25,11 @@ def register(agent: AgentT) -> dict[str, Any]:
         mode=a11y → accessibility / ARIA tree (best for finding click targets).
         mode=text → visible text dump of the body.
         """
-        if err := not_allowed(ctx, "browser_snapshot"):
-            return err
         return await traced(
             ctx,
             "browser_snapshot",
             {"mode": mode, "max_chars": max_chars},
-            lambda: browser_snapshot(mode=mode, max_chars=max_chars),
+            lambda: _browser_snapshot(mode=mode, max_chars=max_chars),
         )
 
-    return {"browser_snapshot": browser_snapshot_tool}
+    return {"browser_snapshot": browser_snapshot}

@@ -7,15 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, maybe_approve, traced
-from lattice.sqlite import sqlite_unregister
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.sqlite import sqlite_unregister as _sqlite_unregister
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def sqlite_unregister_tool(ctx: RunContext[TurnDeps], name: str) -> str:
-        if err := not_allowed(ctx, "sqlite_unregister"):
-            return err
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def sqlite_unregister(ctx: RunContext[TurnDeps], name: str) -> str:
         denied = await maybe_approve(ctx, "sqlite_unregister", name, name=name)
         if denied:
             return denied
@@ -23,7 +23,7 @@ def register(agent: AgentT) -> dict[str, Any]:
             ctx,
             "sqlite_unregister",
             {"name": name},
-            lambda: sqlite_unregister(ctx.deps.sqlite_registry, name),
+            lambda: _sqlite_unregister(ctx.deps.sqlite_registry, name),
         )
 
-    return {"sqlite_unregister": sqlite_unregister_tool}
+    return {"sqlite_unregister": sqlite_unregister}

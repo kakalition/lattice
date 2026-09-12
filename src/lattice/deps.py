@@ -25,6 +25,7 @@ CORE_TOOL_NAMES = [
     "read_file",
     "write_file",
     "edit_file",
+    "remove_path",
     "search_files",
     "ocr",
     "generate_pdf",
@@ -60,9 +61,6 @@ CORE_TOOL_NAMES = [
     "skill_view",
     "profile_list",
     "profile_remove",
-    "tool_search",
-    "tool_describe",
-    "tool_invoke",
 ]
 
 

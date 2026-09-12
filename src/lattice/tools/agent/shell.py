@@ -8,15 +8,15 @@ from pydantic_ai import RunContext
 
 from lattice.audit import audit_log
 from lattice.deps import TurnDeps, maybe_approve, traced, truncate_result
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.tools.agent._common import ToolTier, ToolsetT
 from lattice.tools.shell import run_shell
 
+TIER = ToolTier.EAGER
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
+
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
     async def shell(ctx: RunContext[TurnDeps], command: str, timeout: float = 60.0) -> str:
-        if err := not_allowed(ctx, "shell"):
-            return err
         denied = await maybe_approve(ctx, "shell", command, command=command)
         if denied:
             return denied

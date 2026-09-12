@@ -7,13 +7,15 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.tools.agent._common import AgentT, not_allowed
-from lattice.tools.metrics import metric_query
+from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.metrics import metric_query as _metric_query
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def metric_query_tool(
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def metric_query(
         ctx: RunContext[TurnDeps],
         name: str | None = None,
         since: str | None = None,
@@ -21,13 +23,11 @@ def register(agent: AgentT) -> dict[str, Any]:
         limit: int = 200,
     ) -> str:
         """Query metrics; with name, includes avg/sum/streak and per-day totals."""
-        if err := not_allowed(ctx, "metric_query"):
-            return err
         return await traced(
             ctx,
             "metric_query",
             {"name": name, "since": since, "until": until, "limit": limit},
-            lambda: metric_query(
+            lambda: _metric_query(
                 name,
                 since=since,
                 until=until,
@@ -36,4 +36,4 @@ def register(agent: AgentT) -> dict[str, Any]:
             ),
         )
 
-    return {"metric_query": metric_query_tool}
+    return {"metric_query": metric_query}

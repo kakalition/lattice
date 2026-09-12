@@ -9,7 +9,7 @@ import pytest
 
 from lattice.config import BrowserChannel, BrowserConfig
 from lattice.deps import CORE_TOOL_NAMES
-from lattice.tools.agent import register_all
+from lattice.tools.agent import tool_functions
 from lattice.tools.browser import (
     BROWSER_ACTIONS,
     _validate_url,
@@ -71,13 +71,10 @@ def test_core_tools_include_browser() -> None:
     assert "browser_snapshot" in CORE_TOOL_NAMES
 
 
-def test_register_all_includes_browser_tools() -> None:
-    from pydantic_ai import Agent
+def test_build_toolsets_includes_browser_tools() -> None:
+    from lattice.tools.agent import tool_functions
 
-    from lattice.deps import TurnDeps
-
-    agent: Agent[TurnDeps, str] = Agent("test", deps_type=TurnDeps, system_prompt="x")
-    mapping = register_all(agent)
+    mapping = tool_functions()
     assert "browser_interact" in mapping
     assert "browser_snapshot" in mapping
     assert set(CORE_TOOL_NAMES) <= set(mapping)

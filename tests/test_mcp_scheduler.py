@@ -8,13 +8,7 @@ from pathlib import Path
 import pytest
 
 from lattice.config import McpDeferMode, ToolsConfig
-from lattice.mcp import (
-    McpHostManager,
-    McpToolInfo,
-    should_defer_mcp,
-    tool_describe,
-    tool_search,
-)
+from lattice.mcp import McpHostManager, McpToolInfo, should_defer_mcp
 from lattice.scheduler import (
     Job,
     SchedulerRunner,
@@ -26,15 +20,54 @@ from lattice.scheduler import (
 )
 
 
-def test_mcp_defer_and_bridge() -> None:
+def test_mcp_defer_decision() -> None:
     mgr = McpHostManager()
     mgr.register_discovered(
         [McpToolInfo(server="s", name=f"t{i}", description=f"tool {i}") for i in range(10)]
     )
     cfg = ToolsConfig(mcp_defer=McpDeferMode.AUTO, mcp_defer_threshold=8)
     assert should_defer_mcp(mgr, cfg)
-    assert "t3" in tool_search(mgr, "t3")
-    assert "schema" in tool_describe(mgr, "t3")
+    assert not should_defer_mcp(
+        mgr, ToolsConfig(mcp_defer=McpDeferMode.NEVER, mcp_defer_threshold=8)
+    )
+    assert should_defer_mcp(
+        mgr, ToolsConfig(mcp_defer=McpDeferMode.ALWAYS, mcp_defer_threshold=99)
+    )
+
+
+def test_mcp_toolset_surfaces_discovered_tools() -> None:
+    import asyncio
+    from dataclasses import dataclass
+
+    from pydantic_ai.toolsets import DeferredLoadingToolset
+
+    from lattice.mcp.toolset import McpToolset
+
+    @dataclass
+    class _Ctx:
+        max_retries: int = 1
+
+    mgr = McpHostManager()
+    mgr.register_discovered(
+        [McpToolInfo(server="s", name=f"t{i}", description=f"tool {i}") for i in range(10)]
+    )
+    mcp_toolset = McpToolset(mgr)
+    tools = asyncio.run(mcp_toolset.get_tools(_Ctx()))
+    assert "s/t3" in tools
+    assert tools["s/t3"].tool_def.description == "tool 3"
+
+    # Native deferral marks the MCP tools hidden until tool search reveals them.
+    deferred = DeferredLoadingToolset(mcp_toolset)
+    dtools = asyncio.run(deferred.get_tools(_Ctx()))
+    assert all(t.tool_def.defer_loading for t in dtools.values())
+
+
+def test_mcp_call_reports_not_connected() -> None:
+    mgr = McpHostManager()
+    mgr.register_discovered([McpToolInfo(server="s", name="t3", description="tool 3")])
+    out = mgr.call("s/t3", {"x": 1})
+    assert "stub" in out.lower()
+    assert "unknown mcp tool" in mgr.call("nope")
 
 
 def test_scheduler_jobs_roundtrip(tmp_path: Path) -> None:

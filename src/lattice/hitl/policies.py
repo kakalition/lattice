@@ -63,6 +63,7 @@ DESTRUCTIVE_GATE_TOOLS = frozenset(
         "sqlite_unregister",
         "profile_remove",
         "execute_script",
+        "remove_path",
     }
 )
 
@@ -139,5 +140,10 @@ def tool_needs_approval(tool_name: str, *, args: dict | None = None) -> bool:
             return False
         body = str(args.get("code") or args.get("code_preview") or "")
         return script_needs_approval(body, language=str(args.get("language") or ""))
+    if tool_name == "remove_path":
+        if not args:
+            return True
+        # Any removal is gated; recursive removal always requires approval.
+        return True
     # sqlite_unregister, profile_remove
     return True

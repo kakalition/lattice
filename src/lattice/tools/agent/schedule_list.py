@@ -7,18 +7,18 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
-from lattice.scheduler.tools import schedule_list
-from lattice.tools.agent._common import AgentT, not_allowed
+from lattice.scheduler.tools import schedule_list as _schedule_list
+from lattice.tools.agent._common import ToolTier, ToolsetT
+
+TIER = ToolTier.COLD
 
 
-def register(agent: AgentT) -> dict[str, Any]:
-    @agent.tool
-    async def schedule_list_tool(ctx: RunContext[TurnDeps]) -> str:
+def register(toolset: ToolsetT) -> dict[str, Any]:
+    @toolset.tool
+    async def schedule_list(ctx: RunContext[TurnDeps]) -> str:
         """List scheduled reminder jobs."""
-        if err := not_allowed(ctx, "schedule_list"):
-            return err
         return await traced(
-            ctx, "schedule_list", {}, lambda: schedule_list(home=ctx.deps.settings.home)
+            ctx, "schedule_list", {}, lambda: _schedule_list(home=ctx.deps.settings.home)
         )
 
-    return {"schedule_list": schedule_list_tool}
+    return {"schedule_list": schedule_list}
