@@ -23,7 +23,7 @@ from lattice.deps import (  # noqa: F401 — re-export for existing imports
 from lattice.mcp import McpHostManager, should_defer_mcp
 from lattice.mcp.toolset import McpToolset, mcp_tool_name
 from lattice.memory import Memory, build_memory
-from lattice.profiles import Profile, merge_tool_policy
+from lattice.profiles import Profile, apply_name, merge_tool_policy, system_soul
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers import build_openai_model
 from lattice.tools.agent import build_toolsets, resolve_tier
@@ -46,9 +46,9 @@ def clear_toolset_cache() -> None:
 def build_prompt_bundle(
     profile: Profile, skills_entries: list[tuple[str, str]], notices: list[str]
 ) -> PromptBundle:
-    soul = profile.soul.strip() or "You are Lattice."
-    style = profile.style.strip()
-    identity = f"{soul}\n\n{style}" if style else soul
+    base = system_soul()
+    persona = apply_name(profile.soul.strip(), profile.persona_name)
+    identity = f"{base}\n\n{persona}".strip() if persona else base
     context = profile.user_notes.strip()
     return PromptBundle(
         identity=identity,

@@ -336,17 +336,25 @@ def test_ensure_default_profile(tmp_path: Path) -> None:
 
 def test_soul_read_write_reset(tmp_path: Path) -> None:
     from lattice.profiles import read_soul, reset_soul, soul_path, write_soul
-    from lattice.profiles.load import DEFAULT_SOUL
+    from lattice.profiles.load import DEFAULT_PROFILE_SOUL
 
     ensure_default_profile(tmp_path)
-    write_soul("default", "You are Test.", home=tmp_path)
-    assert read_soul("default", tmp_path).strip() == "You are Test."
+    write_soul("default", "name: Test\n\n# Persona\n- You are {name}.", home=tmp_path)
+    stored = read_soul("default", tmp_path)
+    assert "name: Test" in stored
     assert soul_path("default", tmp_path).is_file()
     # A soul edit is live on the next load (no restart / no cache).
-    assert load_profile("default", tmp_path).soul.strip() == "You are Test."
+    profile = load_profile("default", tmp_path)
+    assert profile.persona_name == "Test"
+    assert "You are {name}." in profile.soul
+
+    # A write without a name line preserves the existing name.
+    write_soul("default", "# Persona\n- Terse.", home=tmp_path)
+    assert load_profile("default", tmp_path).persona_name == "Test"
 
     reset_soul("default", tmp_path)
-    assert read_soul("default", tmp_path).strip() == DEFAULT_SOUL.strip()
+    assert read_soul("default", tmp_path).strip() == DEFAULT_PROFILE_SOUL.strip()
+    assert load_profile("default", tmp_path).persona_name == "Lattice"
 
     with pytest.raises(ValueError):
         write_soul("default", "   ", home=tmp_path)
@@ -356,44 +364,49 @@ def test_soul_read_write_reset(tmp_path: Path) -> None:
         write_soul("missing", "x", home=tmp_path)
 
 
-def test_style_read_write_reset(tmp_path: Path) -> None:
+def test_soul_name_helpers(tmp_path: Path) -> None:
     from lattice.profiles import (
-        read_style,
-        reset_style,
-        style_path,
-        write_style,
+        read_soul_name,
+        reset_soul_name,
+        write_soul,
+        write_soul_name,
     )
-    from lattice.profiles.load import DEFAULT_STYLE
 
     ensure_default_profile(tmp_path)
-    # Fresh profile seeds STYLE.md and reports it as the effective style.
-    assert style_path("default", tmp_path).is_file()
-    assert load_profile("default", tmp_path).style.strip() == DEFAULT_STYLE.strip()
+    write_soul("default", "name: Old\n\n## Personality\n- Stoic.", home=tmp_path)
 
-    write_style("default", "Be terse and use bullets.", home=tmp_path)
-    assert read_style("default", tmp_path).strip() == "Be terse and use bullets."
-    assert load_profile("default", tmp_path).style.strip() == "Be terse and use bullets."
+    assert read_soul_name("default", tmp_path) == "Old"
+    write_soul_name("default", "Aria", home=tmp_path)
+    assert read_soul_name("default", tmp_path) == "Aria"
+    # Only the name changed; the persona body survives.
+    stored = load_profile("default", tmp_path).soul
+    assert "Stoic." in stored
+    assert "name: Aria" in stored
 
-    # An empty STYLE.md falls back to the built-in default.
-    style_path("default", tmp_path).write_text("   \n", encoding="utf-8")
-    assert read_style("default", tmp_path).strip() == DEFAULT_STYLE.strip()
-
-    reset_style("default", tmp_path)
-    assert read_style("default", tmp_path).strip() == DEFAULT_STYLE.strip()
+    reset_soul_name("default", tmp_path)
+    assert read_soul_name("default", tmp_path) == "Lattice"
     with pytest.raises(ValueError):
-        write_style("default", "  ", home=tmp_path)
+        write_soul_name("default", "  ", home=tmp_path)
 
 
-def test_prompt_bundle_includes_style(tmp_path: Path) -> None:
+def test_prompt_bundle_has_system_base_and_persona(tmp_path: Path) -> None:
     from lattice.agent_app import build_prompt_bundle
-    from lattice.profiles import write_style
+    from lattice.profiles import read_soul_name, write_soul
 
     ensure_default_profile(tmp_path)
-    write_style("default", "STYLE-SENTINEL: answer in haiku.", home=tmp_path)
+    write_soul(
+        "default",
+        "name: Aria\n\n## Who you are\n- You are {name}, a terse assistant.",
+        home=tmp_path,
+    )
     profile = load_profile("default", tmp_path)
     bundle = build_prompt_bundle(profile, [], [])
-    assert "STYLE-SENTINEL" in bundle.identity
-    assert profile.soul.strip() in bundle.identity
+    # Persona (with the configured name) is present…
+    assert "You are Aria, a terse assistant." in bundle.identity
+    assert read_soul_name("default", tmp_path) == "Aria"
+    # …and the shipped operating base is prepended (name-agnostic, no "Lattice").
+    assert "## Safety" in bundle.identity
+    assert "Lattice" not in bundle.identity
 
 
 def test_seed_skill_scripts_non_clobber(tmp_path: Path) -> None:

@@ -325,16 +325,16 @@ class TelegramBot:
                 reset=reset_soul,
             )
 
-        async def on_style(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            from lattice.profiles import read_style, reset_style, write_style
+        async def on_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            from lattice.profiles import read_soul_name, reset_soul_name, write_soul_name
 
             await _profile_file_cmd(
                 update,
                 context,
-                noun="style",
-                read=read_style,
-                write=write_style,
-                reset=reset_style,
+                noun="name",
+                read=read_soul_name,
+                write=write_soul_name,
+                reset=reset_soul_name,
             )
 
         async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -555,7 +555,7 @@ class TelegramBot:
         app.add_handler(CommandHandler("resume", on_resume))
         app.add_handler(CommandHandler("profile", on_profile))
         app.add_handler(CommandHandler("soul", on_soul))
-        app.add_handler(CommandHandler("style", on_style))
+        app.add_handler(CommandHandler("name", on_name))
         app.add_handler(CommandHandler("model", on_model))
         app.add_handler(CommandHandler("tools", on_tools))
         app.add_handler(CommandHandler("forget", on_forget))

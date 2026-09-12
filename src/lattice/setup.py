@@ -468,11 +468,10 @@ Use when the user wants a new agent persona/policy or to change an existing prof
 profiles/<id>/
   profile.yaml
   SOUL.md
-  STYLE.md
   USER.md
 ```
 Paths for tools: `profiles/<id>/profile.yaml`, `profiles/<id>/SOUL.md`,
-`profiles/<id>/STYLE.md`, `profiles/<id>/USER.md` (resolved under Lattice home).
+`profiles/<id>/USER.md` (resolved under Lattice home).
 
 ## profile.yaml template
 ```yaml
@@ -507,20 +506,21 @@ Run through `execute_script` with `language="python"`:
 - `skills/profile-authoring/scripts/profile_remove.py remove <id>` — delete a profile.
   Destructive: **HITL-gated**; cannot remove `default`.
 
-## SOUL.md / STYLE.md / USER.md
-- **SOUL.md**: identity + behavior (system prompt). Complete and stable; write in
-  the assistant's voice. Usually left as the built-in default.
-- **STYLE.md**: the conversation-styling layer — tone, length, formatting,
-  language, emoji policy. This is the operator-tunable knob.
+## SOUL.md / USER.md
+- **SOUL.md**: the persona — an optional `name:` line (default `Lattice`) plus who
+  the agent is, their personality, and conversation style. This is the one layer
+  the operator tunes to change the assistant's identity and voice.
 - **USER.md**: durable user notes for that persona (optional).
-- Both files take effect on the **next turn** — no restart.
+- The operating base (how the assistant works, safety) is the built-in **system
+  soul** shipped in the package, not in the profile.
+- Persona edits take effect on the **next turn** — no restart.
 
-## Changing style / soul from a channel
+## Changing the persona / name from a channel
 - Telegram commands (active profile):
-  - `/style` show · `/style set <text>` replace · `/style reset` default
-  - `/soul` show · `/soul set <text>` replace · `/soul reset` default
-- Or just ask in chat: the agent writes `profiles/<id>/STYLE.md` (or `SOUL.md`)
-  with `write_file` / `edit_file`. Changes are live on the next message.
+  - `/soul` show · `/soul set <persona>` replace · `/soul reset` default
+  - `/name` show · `/name set <text>` replace · `/name reset` default
+- Or just ask in chat: the agent writes `profiles/<id>/SOUL.md` with
+  `write_file` / `edit_file`. Changes are live on the next message.
 
 ## Channel flow
 1. `clarify` id, purpose, tool strictness, which skills to prefer.

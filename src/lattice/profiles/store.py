@@ -8,11 +8,13 @@ from pathlib import Path
 
 from lattice.paths import lattice_home
 from lattice.profiles.load import (
-    DEFAULT_SOUL,
-    DEFAULT_STYLE,
+    DEFAULT_NAME,
+    DEFAULT_PROFILE_SOUL,
+    NAME_LINE_RE,
     Profile,
     ensure_default_profile,
     load_profile,
+    parse_persona,
 )
 from lattice.session import SessionStore
 
@@ -75,12 +77,6 @@ def soul_path(profile_id: str, home: Path | None = None) -> Path:
     return (home or lattice_home()) / "profiles" / pid / "SOUL.md"
 
 
-def style_path(profile_id: str, home: Path | None = None) -> Path:
-    """Path to ``profiles/<id>/STYLE.md`` for a validated profile id."""
-    pid = validate_profile_id(profile_id)
-    return (home or lattice_home()) / "profiles" / pid / "STYLE.md"
-
-
 def _write_profile_file(
     profile_id: str, filename: str, text: str, *, empty_error: str, home: Path | None
 ) -> Path:
@@ -103,32 +99,38 @@ def read_soul(profile_id: str, home: Path | None = None) -> str:
     return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
+def read_soul_name(profile_id: str, home: Path | None = None) -> str:
+    """The persona name declared in a profile's SOUL.md (default ``Lattice``)."""
+    return parse_persona(read_soul(profile_id, home) or DEFAULT_PROFILE_SOUL)[0]
+
+
 def write_soul(profile_id: str, text: str, home: Path | None = None) -> Path:
-    """Replace a profile's SOUL.md. Takes effect on the next turn (no restart)."""
+    """Replace a profile's persona SOUL.md. Live on the next turn (no restart).
+
+    A ``name:`` line is preserved if the new text does not declare one.
+    """
+    body = (text or "").strip()
+    if not body:
+        raise ValueError("soul text is required")
+    if not NAME_LINE_RE.search(body):
+        body = f"name: {read_soul_name(profile_id, home)}\n\n{body}"
     return _write_profile_file(
-        profile_id, "SOUL.md", text, empty_error="soul text is required", home=home
+        profile_id, "SOUL.md", body, empty_error="soul text is required", home=home
     )
+
+
+def write_soul_name(profile_id: str, name: str, home: Path | None = None) -> Path:
+    """Set just the persona name, keeping the rest of SOUL.md."""
+    clean = (name or "").strip().replace("\n", " ")
+    if not clean:
+        raise ValueError("name is required")
+    _, persona = parse_persona(read_soul(profile_id, home) or DEFAULT_PROFILE_SOUL)
+    return write_soul(profile_id, f"name: {clean}\n\n{persona}\n", home=home)
+
+
+def reset_soul_name(profile_id: str, home: Path | None = None) -> Path:
+    return write_soul_name(profile_id, DEFAULT_NAME, home=home)
 
 
 def reset_soul(profile_id: str, home: Path | None = None) -> Path:
-    return write_soul(profile_id, DEFAULT_SOUL, home=home)
-
-
-def read_style(profile_id: str, home: Path | None = None) -> str:
-    path = style_path(profile_id, home)
-    if path.is_file():
-        text = path.read_text(encoding="utf-8").strip()
-        if text:
-            return text
-    return DEFAULT_STYLE.strip()
-
-
-def write_style(profile_id: str, text: str, home: Path | None = None) -> Path:
-    """Replace a profile's STYLE.md. Takes effect on the next turn (no restart)."""
-    return _write_profile_file(
-        profile_id, "STYLE.md", text, empty_error="style text is required", home=home
-    )
-
-
-def reset_style(profile_id: str, home: Path | None = None) -> Path:
-    return write_style(profile_id, DEFAULT_STYLE, home=home)
+    return write_soul(profile_id, DEFAULT_PROFILE_SOUL, home=home)
