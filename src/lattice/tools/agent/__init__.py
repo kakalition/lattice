@@ -19,6 +19,7 @@ from lattice.tools.agent._common import ToolsetT
 from . import (
     browser_interact,
     browser_snapshot,
+    calculator,
     clarify,
     edit_file,
     execute_script,
@@ -72,6 +73,7 @@ _MODULES = [
     browser_snapshot,
     execute_script,
     clarify,
+    calculator,
     todo,
     schedule_add,
     schedule_list,

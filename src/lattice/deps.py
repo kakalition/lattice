@@ -35,6 +35,7 @@ CORE_TOOL_NAMES = [
     "browser_snapshot",
     "execute_script",
     "clarify",
+    "calculator",
     "todo",
     "schedule_add",
     "schedule_list",
