@@ -7,11 +7,20 @@ import time
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from lattice.events import NullTurnEvents, TurnEvents
 
 logger = logging.getLogger("lattice.turn")
+
+# Current turn id for the running task, so model-level logging can be correlated
+# back to a turn without threading the id through every call signature.
+_turn_id_var: ContextVar[str | None] = ContextVar("lattice_turn_id", default=None)
+
+
+def current_turn_id() -> str | None:
+    return _turn_id_var.get()
 
 
 def new_turn_id() -> str:
@@ -87,6 +96,7 @@ class LoggingTurnEvents:
         tools: list[str],
         skills: list[tuple[str, str]],
     ) -> None:
+        _turn_id_var.set(self.turn_id)
         self._p(
             "BEGIN channel=%s user=%s profile=%s session=%s",
             channel,

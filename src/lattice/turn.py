@@ -120,7 +120,8 @@ async def run_turn(
     user_specs = user_tools.specs
 
     memory = build_memory_for_profile(settings, profile, model_id=primary_id)
-    prefetch = await memory.search(inbound.text, limit=5)
+    with trace.timed("memory_prefetch"):
+        prefetch = await memory.search(inbound.text, limit=5)
     if prefetch:
         notices.append("Relevant memories:\n" + "\n".join(f"- {h.get('text')}" for h in prefetch))
 
@@ -135,14 +136,15 @@ async def run_turn(
     pressure = PressureConfig(ratio=settings.agent.context_pressure_ratio)
     if pressure.is_over_pressure(messages):
         await events.on_status("compressing context")
-        await memory.sync_turn(messages)
-        aux = Summarizer(settings, primary_id)
-        result = await compress(
-            messages,
-            aux=aux,
-            protect_last_n=settings.agent.protect_last_n,
-            pressure=pressure,
-        )
+        with trace.timed("compress"):
+            await memory.sync_turn(messages)
+            aux = Summarizer(settings, primary_id)
+            result = await compress(
+                messages,
+                aux=aux,
+                protect_last_n=settings.agent.protect_last_n,
+                pressure=pressure,
+            )
         if result.compressed:
             notices.append("Context was compressed; older turns summarized.")
             parent_id = session_id
@@ -303,7 +305,8 @@ async def run_turn(
             messages.append({"role": "assistant", "content": text})
             usage_payload = _usage_payload()
             await store.save_messages(session_id, messages, usage=usage_payload)
-            await memory.sync_turn(messages[-4:])
+            with trace.timed("memory_sync"):
+                await memory.sync_turn(messages[-4:])
         await pool.close_all()
         trace.log_end(
             outbound_text=text or "",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic_ai import Agent
 
 from lattice.config import LatticeSettings
+from lattice.providers.logging_model import with_llm_logging
 from lattice.providers.openai_compat import build_openai_model
 
 
@@ -13,7 +14,7 @@ class Summarizer:
         self.settings = settings
         self.model_id = model_id
         self._agent = Agent(
-            build_openai_model(settings, model_id),
+            with_llm_logging(build_openai_model(settings, model_id)),
             system_prompt="You summarize conversation transcripts concisely for long-term context.",
         )
 

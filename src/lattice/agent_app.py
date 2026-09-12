@@ -26,6 +26,7 @@ from lattice.memory import Memory, build_memory
 from lattice.profiles import Profile, apply_name, merge_tool_policy, system_soul
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers import build_openai_model
+from lattice.providers.logging_model import with_llm_logging
 from lattice.tools.agent import build_toolsets, resolve_tier
 from lattice.tools.user_tools import UserToolset, UserToolSpec
 
@@ -201,6 +202,7 @@ def create_agent(
     resolved = model or build_openai_model(
         settings, resolve_model_id(settings, profile_model=primary)
     )
+    resolved = with_llm_logging(resolved)
     built = (
         list(toolsets)
         if toolsets is not None
