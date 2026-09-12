@@ -46,7 +46,9 @@ def clear_toolset_cache() -> None:
 def build_prompt_bundle(
     profile: Profile, skills_entries: list[tuple[str, str]], notices: list[str]
 ) -> PromptBundle:
-    identity = profile.soul.strip() or "You are Lattice."
+    soul = profile.soul.strip() or "You are Lattice."
+    style = profile.style.strip()
+    identity = f"{soul}\n\n{style}" if style else soul
     context = profile.user_notes.strip()
     return PromptBundle(
         identity=identity,

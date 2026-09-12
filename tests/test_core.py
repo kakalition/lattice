@@ -356,6 +356,46 @@ def test_soul_read_write_reset(tmp_path: Path) -> None:
         write_soul("missing", "x", home=tmp_path)
 
 
+def test_style_read_write_reset(tmp_path: Path) -> None:
+    from lattice.profiles import (
+        read_style,
+        reset_style,
+        style_path,
+        write_style,
+    )
+    from lattice.profiles.load import DEFAULT_STYLE
+
+    ensure_default_profile(tmp_path)
+    # Fresh profile seeds STYLE.md and reports it as the effective style.
+    assert style_path("default", tmp_path).is_file()
+    assert load_profile("default", tmp_path).style.strip() == DEFAULT_STYLE.strip()
+
+    write_style("default", "Be terse and use bullets.", home=tmp_path)
+    assert read_style("default", tmp_path).strip() == "Be terse and use bullets."
+    assert load_profile("default", tmp_path).style.strip() == "Be terse and use bullets."
+
+    # An empty STYLE.md falls back to the built-in default.
+    style_path("default", tmp_path).write_text("   \n", encoding="utf-8")
+    assert read_style("default", tmp_path).strip() == DEFAULT_STYLE.strip()
+
+    reset_style("default", tmp_path)
+    assert read_style("default", tmp_path).strip() == DEFAULT_STYLE.strip()
+    with pytest.raises(ValueError):
+        write_style("default", "  ", home=tmp_path)
+
+
+def test_prompt_bundle_includes_style(tmp_path: Path) -> None:
+    from lattice.agent_app import build_prompt_bundle
+    from lattice.profiles import write_style
+
+    ensure_default_profile(tmp_path)
+    write_style("default", "STYLE-SENTINEL: answer in haiku.", home=tmp_path)
+    profile = load_profile("default", tmp_path)
+    bundle = build_prompt_bundle(profile, [], [])
+    assert "STYLE-SENTINEL" in bundle.identity
+    assert profile.soul.strip() in bundle.identity
+
+
 def test_seed_skill_scripts_non_clobber(tmp_path: Path) -> None:
     from lattice.setup import seed_skill_scripts
 

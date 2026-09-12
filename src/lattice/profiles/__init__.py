@@ -3,12 +3,16 @@ from lattice.profiles.store import (
     get_profile,
     list_profiles,
     read_soul,
+    read_style,
     remove_profile,
     reset_soul,
+    reset_style,
     resolve_sticky_profile,
     soul_path,
+    style_path,
     validate_profile_id,
     write_soul,
+    write_style,
 )
 
 __all__ = [
@@ -18,11 +22,15 @@ __all__ = [
     "list_profiles",
     "load_profile",
     "read_soul",
+    "read_style",
     "merge_tool_policy",
     "remove_profile",
     "reset_soul",
+    "reset_style",
     "resolve_sticky_profile",
     "soul_path",
+    "style_path",
     "validate_profile_id",
     "write_soul",
+    "write_style",
 ]

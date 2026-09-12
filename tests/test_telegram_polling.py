@@ -22,10 +22,11 @@ def test_telegram_bot_does_not_call_run_polling() -> None:
     assert "start_polling" in calls
 
 
-def test_soul_command_is_registered() -> None:
+def test_soul_and_style_commands_are_registered() -> None:
     from lattice.channel.telegram.commands import COMMANDS
 
-    assert "soul" in {name for name, _ in COMMANDS}
+    names = {name for name, _ in COMMANDS}
+    assert {"soul", "style"} <= names
 
     src = Path(__file__).resolve().parents[1] / "src/lattice/channel/telegram/bot.py"
     tree = ast.parse(src.read_text(encoding="utf-8"))
@@ -39,4 +40,4 @@ def test_soul_command_is_registered() -> None:
             and isinstance(node.args[0], ast.Constant)
         ):
             handlers.append(str(node.args[0].value))
-    assert "soul" in handlers
+    assert {"soul", "style"} <= set(handlers)

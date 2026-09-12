@@ -13,4 +13,5 @@ COMMANDS = [
     ("tools", "List enabled tool policy"),
     ("profile", "Switch or remove profile"),
     ("soul", "Show, set, or reset the profile soul"),
+    ("style", "Show, set, or reset the conversation style"),
 ]

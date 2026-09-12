@@ -261,9 +261,15 @@ class TelegramBot:
                 "Use the memory_forget tool in chat, or pass an id: /forget <id> (wired via turn)."
             )
 
-        async def on_soul(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-            from lattice.profiles import read_soul, reset_soul, write_soul
-
+        async def _profile_file_cmd(
+            update: Update,
+            context: ContextTypes.DEFAULT_TYPE,
+            *,
+            noun: str,
+            read: Any,
+            write: Any,
+            reset: Any,
+        ) -> None:
             if not update.message or not update.effective_user:
                 return
             uid = str(update.effective_user.id)
@@ -275,17 +281,16 @@ class TelegramBot:
             low = rest.lower()
 
             if not rest or low in {"show", "view", "get"}:
-                soul = read_soul(pid, self.settings.home).strip()
-                body = soul or "(empty — Lattice falls back to a minimal identity)"
-                if len(body) > 3500:
-                    body = body[:3500] + "…"
-                await update.message.reply_text(f"soul for profile {pid}:\n\n{body}")
+                current = read(pid, self.settings.home).strip() or "(empty)"
+                if len(current) > 3500:
+                    current = current[:3500] + "…"
+                await update.message.reply_text(f"{noun} for profile {pid}:\n\n{current}")
                 return
 
             if low in {"reset", "default"}:
-                reset_soul(pid, self.settings.home)
+                reset(pid, self.settings.home)
                 await update.message.reply_text(
-                    f"soul reset to the built-in default for profile {pid}."
+                    f"{noun} reset to the built-in default for profile {pid}."
                 )
                 return
 
@@ -293,20 +298,43 @@ class TelegramBot:
                 if low.startswith(prefix):
                     content = rest[len(prefix) :].lstrip("\n ").strip()
                     try:
-                        write_soul(pid, content, self.settings.home)
+                        write(pid, content, self.settings.home)
                     except (FileNotFoundError, ValueError) as exc:
                         await update.message.reply_text(str(exc))
                         return
                     await update.message.reply_text(
-                        f"soul updated for profile {pid} — active on your next message."
+                        f"{noun} updated for profile {pid} — active on your next message."
                     )
                     return
 
             await update.message.reply_text(
-                "usage:\n"
-                "/soul — show current soul\n"
-                "/soul set <text> — replace it\n"
-                "/soul reset — restore the built-in default"
+                f"usage:\n/{noun} — show current\n"
+                f"/{noun} set <text> — replace it\n"
+                f"/{noun} reset — restore the built-in default"
+            )
+
+        async def on_soul(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            from lattice.profiles import read_soul, reset_soul, write_soul
+
+            await _profile_file_cmd(
+                update,
+                context,
+                noun="soul",
+                read=read_soul,
+                write=write_soul,
+                reset=reset_soul,
+            )
+
+        async def on_style(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            from lattice.profiles import read_style, reset_style, write_style
+
+            await _profile_file_cmd(
+                update,
+                context,
+                noun="style",
+                read=read_style,
+                write=write_style,
+                reset=reset_style,
             )
 
         async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -527,6 +555,7 @@ class TelegramBot:
         app.add_handler(CommandHandler("resume", on_resume))
         app.add_handler(CommandHandler("profile", on_profile))
         app.add_handler(CommandHandler("soul", on_soul))
+        app.add_handler(CommandHandler("style", on_style))
         app.add_handler(CommandHandler("model", on_model))
         app.add_handler(CommandHandler("tools", on_tools))
         app.add_handler(CommandHandler("forget", on_forget))

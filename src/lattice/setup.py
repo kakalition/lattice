@@ -468,10 +468,11 @@ Use when the user wants a new agent persona/policy or to change an existing prof
 profiles/<id>/
   profile.yaml
   SOUL.md
+  STYLE.md
   USER.md
 ```
-Paths for tools: `profiles/<id>/profile.yaml`, `profiles/<id>/SOUL.md`, `profiles/<id>/USER.md`
-(resolved under Lattice home).
+Paths for tools: `profiles/<id>/profile.yaml`, `profiles/<id>/SOUL.md`,
+`profiles/<id>/STYLE.md`, `profiles/<id>/USER.md` (resolved under Lattice home).
 
 ## profile.yaml template
 ```yaml
@@ -506,16 +507,20 @@ Run through `execute_script` with `language="python"`:
 - `skills/profile-authoring/scripts/profile_remove.py remove <id>` — delete a profile.
   Destructive: **HITL-gated**; cannot remove `default`.
 
-## SOUL.md / USER.md
-- **SOUL.md**: identity + behavior (system prompt). Concise; write in the assistant's voice.
+## SOUL.md / STYLE.md / USER.md
+- **SOUL.md**: identity + behavior (system prompt). Complete and stable; write in
+  the assistant's voice. Usually left as the built-in default.
+- **STYLE.md**: the conversation-styling layer — tone, length, formatting,
+  language, emoji policy. This is the operator-tunable knob.
 - **USER.md**: durable user notes for that persona (optional).
-- Editing `profiles/<id>/SOUL.md` takes effect on the **next turn** — no restart.
+- Both files take effect on the **next turn** — no restart.
 
-## Changing the soul from a channel
-- Telegram has a direct command: `/soul` (show), `/soul set <text>` (replace),
-  `/soul reset` (restore the built-in default). Applies to the active profile.
-- Or just ask in chat: the agent writes `profiles/<id>/SOUL.md` with
-  `write_file` / `edit_file`. Changes are live on the next message.
+## Changing style / soul from a channel
+- Telegram commands (active profile):
+  - `/style` show · `/style set <text>` replace · `/style reset` default
+  - `/soul` show · `/soul set <text>` replace · `/soul reset` default
+- Or just ask in chat: the agent writes `profiles/<id>/STYLE.md` (or `SOUL.md`)
+  with `write_file` / `edit_file`. Changes are live on the next message.
 
 ## Channel flow
 1. `clarify` id, purpose, tool strictness, which skills to prefer.
