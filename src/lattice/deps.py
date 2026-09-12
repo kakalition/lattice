@@ -34,8 +34,6 @@ CORE_TOOL_NAMES = [
     "web_fetch",
     "browser_interact",
     "browser_snapshot",
-    "metric_log",
-    "metric_query",
     "execute_script",
     "clarify",
     "todo",

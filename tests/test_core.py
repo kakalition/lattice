@@ -191,14 +191,18 @@ def test_init_and_skills(tmp_path: Path) -> None:
     assert "sqlite-admin" in names
     assert "cited-research" in names
     assert "weekly-review" in names
-    assert "office-xlsx" in names
     assert "telegram-chat" in names
     assert "skill-authoring" in names
+    assert "tool-authoring" in names
     assert "profile-authoring" in names
     assert "daily-briefing" in names
-    assert "habit-tracker" in names
+    assert "scheduling" in names
     assert "script-authoring" in names
     assert "task-decomposer" in names
+    # Removed built-ins must not come back.
+    assert "office-xlsx" not in names
+    assert "personal-metrics" not in names
+    assert "habit-tracker" not in names
     entries = skill_index_entries(
         skills, prefer=["telegram-chat", "sqlite-admin"], disable=["safe-shell"]
     )
@@ -334,7 +338,6 @@ def test_seed_skill_scripts_non_clobber(tmp_path: Path) -> None:
 
     root = init_home(tmp_path)
     targets = [
-        root / "skills" / "personal-metrics" / "scripts" / "metrics.py",
         root / "skills" / "scheduling" / "scripts" / "schedule.py",
         root / "skills" / "sqlite-admin" / "scripts" / "sqlite.py",
         root / "skills" / "profile-authoring" / "scripts" / "profiles.py",

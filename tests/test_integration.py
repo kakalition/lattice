@@ -157,7 +157,7 @@ async def _run_live(tmp_path: Path, allowed: list[str], prompt: str):
 async def test_live_cold_tool_is_discovered_and_executed(tmp_path: Path) -> None:
     """A deferred tool must be findable and runnable on a real model.
 
-    `metric_log` is cold (not in the eager set), so the only way to reach it is
+    `schedule_add` is cold (not in the eager set), so the only way to reach it is
     through `search_tools`. This is the end-to-end proof that deferral is a
     prompt-size optimisation and not a capability regression.
     """
@@ -168,16 +168,16 @@ async def test_live_cold_tool_is_discovered_and_executed(tmp_path: Path) -> None
     settings = _live_settings(tmp_path)
     profile = get_profile("default", settings.home)
     enabled = resolve_enabled_tools(settings, profile, channel="cli", mcp=McpHostManager())
-    assert "metric_log" in enabled
+    assert "schedule_add" in enabled
 
     _, called = await _run_live(
         tmp_path,
         enabled,
-        "Log a metric named 'coffee' with value 2.",
+        "Schedule a reminder to buy milk tomorrow at 9am.",
     )
     assert "search_tools" in called, "model never searched for the cold tool"
-    assert "metric_log" in called, "cold tool was not executable after discovery"
-    assert (tmp_path / "metrics").exists()
+    assert "schedule_add" in called, "cold tool was not executable after discovery"
+    assert (tmp_path / "scheduler" / "jobs.json").exists()
 
 
 @pytest.mark.asyncio
@@ -198,13 +198,13 @@ async def test_live_eager_tool_needs_no_discovery_round_trip(tmp_path: Path) -> 
 async def test_live_search_cannot_bypass_policy(tmp_path: Path) -> None:
     """The security property: discovery must not reveal a denied tool.
 
-    `metric_query` (allowed, cold) keeps the search corpus non-empty so
-    `search_tools` is actually offered. `metric_log` is denied and must stay
+    `timezone_get` (allowed, cold) keeps the search corpus non-empty so
+    `search_tools` is actually offered. `schedule_add` is denied and must stay
     invisible and unrunnable.
     """
     _, called = await _run_live(
         tmp_path,
-        ["read_file", "metric_query"],  # metric_log deliberately withheld
-        "Log a metric named 'coffee' with value 2. Search for a tool if needed.",
+        ["read_file", "timezone_get"],  # schedule_add deliberately withheld
+        "Schedule a reminder to buy milk tomorrow at 9am. Search for a tool if needed.",
     )
-    assert "metric_log" not in called, "denied cold tool was reachable via search"
+    assert "schedule_add" not in called, "denied cold tool was reachable via search"

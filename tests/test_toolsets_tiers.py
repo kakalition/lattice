@@ -62,9 +62,7 @@ def test_config_glob_overrides_module_tier() -> None:
     assert resolve_tier("browser_interact", eager=[], cold=[]) is ToolTier.COLD
     assert resolve_tier("browser_interact", eager=["browser_*"], cold=[]) is ToolTier.EAGER
     # ``cold`` wins when both match.
-    assert (
-        resolve_tier("web_search", eager=["web_*"], cold=["web_*"]) is ToolTier.COLD
-    )
+    assert resolve_tier("web_search", eager=["web_*"], cold=["web_*"]) is ToolTier.COLD
 
 
 def test_cold_tools_are_deferred_not_absent() -> None:
@@ -236,10 +234,10 @@ def test_denied_cold_tool_is_absent_from_discovery_corpus(tmp_path: Path) -> Non
     corpus, because that corpus is exactly what ``search_tools`` can reveal.
     """
     settings = LatticeSettings(home=tmp_path)
-    captured = _capture_tool_names(settings, ["read_file", "metric_query"])
+    captured = _capture_tool_names(settings, ["read_file", "generate_chart"])
     corpus = set(captured["deferred_tools"])
-    assert "metric_query" in corpus, "allowed cold tool should be discoverable"
-    assert "metric_log" not in corpus, "denied cold tool leaked into the search corpus"
+    assert "generate_chart" in corpus, "allowed cold tool should be discoverable"
+    assert "browser_snapshot" not in corpus, "denied cold tool leaked into the search corpus"
     assert "sqlite_execute" not in corpus, "denied cold tool leaked into the search corpus"
 
 
@@ -275,10 +273,10 @@ def test_calling_a_denied_tool_never_executes(tmp_path: Path) -> None:
     from lattice.mcp import McpHostManager
 
     settings = LatticeSettings(home=tmp_path)
-    deps = _deps_for(settings, ["read_file", "metric_query"])  # metric_log denied
+    deps = _deps_for(settings, ["read_file"])  # write_file denied
 
     async def always_calls_denied(messages, info):
-        return ModelResponse(parts=[ToolCallPart("metric_log", {"name": "coffee", "value": 2})])
+        return ModelResponse(parts=[ToolCallPart("write_file", {"path": "x.txt", "content": "hi"})])
 
     agent = Agent(
         FunctionModel(always_calls_denied),
@@ -288,9 +286,9 @@ def test_calling_a_denied_tool_never_executes(tmp_path: Path) -> None:
         capabilities=[tool_search_capability()],
     )
     with pytest.raises(Exception):
-        asyncio.run(agent.run("log it", deps=deps))
+        asyncio.run(agent.run("write it", deps=deps))
     # The tool body never ran: nothing was written.
-    assert not (tmp_path / "metrics").exists()
+    assert not (tmp_path / "x.txt").exists()
 
 
 # --- remove_path -----------------------------------------------------------
@@ -309,9 +307,7 @@ def test_remove_path_removes_file(tmp_path: Path) -> None:
 def test_remove_path_missing_ok(tmp_path: Path) -> None:
     import asyncio
 
-    out = asyncio.run(
-        remove_path("nope.txt", workspace=tmp_path, home=tmp_path, missing_ok=True)
-    )
+    out = asyncio.run(remove_path("nope.txt", workspace=tmp_path, home=tmp_path, missing_ok=True))
     assert "nothing to remove" in out
     with pytest.raises(FileNotFoundError):
         asyncio.run(remove_path("nope.txt", workspace=tmp_path, home=tmp_path))

@@ -339,7 +339,7 @@ tools:
   # Optional: override which tools ship eagerly vs. behind tool search.
   # Glob patterns; `cold` wins on conflict. Empty = use each tool's built-in tier.
   eager: []   # e.g. ["web_*", "sqlite_*"]
-  cold: []    # e.g. ["browser_*", "metric_*"]
+  cold: []    # e.g. ["browser_*", "generate_*"]
 
 browser:
   channel: auto          # auto | chrome | chromium (auto prefers system Chrome)

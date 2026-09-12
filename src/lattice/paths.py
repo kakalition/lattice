@@ -109,7 +109,6 @@ def ensure_home() -> Path:
         "workspace",
         "logs",
         "browser/profile",
-        "metrics",
         "scripts",
         "tools",
     ):

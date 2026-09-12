@@ -1,6 +1,6 @@
 """Shared SQLite connection PRAGMAs for local throughput and concurrency.
 
-Every Lattice connection (named DBs, session state.db, metrics) is opened through
+Every Lattice connection (named DBs, session state.db) is opened through
 :func:`apply_perf_pragmas` so the tuning is identical everywhere and survives a
 process restart rather than living in a one-off shell session.
 """

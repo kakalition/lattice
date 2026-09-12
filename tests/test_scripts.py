@@ -1,4 +1,4 @@
-"""Tests for metric_log/query and execute_script (bwrap/soft)."""
+"""Tests for execute_script (bwrap/soft sandbox)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pytest
 from lattice.config import ScriptsConfig
 from lattice.deps import CORE_TOOL_NAMES
 from lattice.hitl.policies import tool_needs_approval
-from lattice.tools.metrics import metric_log, metric_query
 from lattice.tools.script import (
     build_bwrap_command,
     build_soft_command,
@@ -19,9 +18,7 @@ from lattice.tools.script import (
 )
 
 
-def test_core_tools_include_metrics_and_script() -> None:
-    assert "metric_log" in CORE_TOOL_NAMES
-    assert "metric_query" in CORE_TOOL_NAMES
+def test_core_tools_include_execute_script() -> None:
     assert "execute_script" in CORE_TOOL_NAMES
 
 
@@ -51,24 +48,6 @@ def test_execute_script_hitl_only_when_dangerous() -> None:
         "execute_script",
         args={"language": "node", "code": "require('child_process').exec('id')"},
     )
-
-
-@pytest.mark.asyncio
-async def test_metric_log_and_query(tmp_path: Path) -> None:
-    out = await metric_log("habit.meditation", 1, unit="bool", note="am", home=tmp_path)
-    assert "logged metric" in out
-    await metric_log("habit.meditation", 1, at="2026-09-10", home=tmp_path)
-    await metric_log("habit.meditation", 1, at="2026-09-09", home=tmp_path)
-    q = await metric_query("habit.meditation", home=tmp_path)
-    assert "summary name=habit.meditation" in q
-    assert "streak_" in q
-    assert "habit.meditation" in q
-
-
-@pytest.mark.asyncio
-async def test_metric_log_rejects_bad_name(tmp_path: Path) -> None:
-    out = await metric_log("!!!", 1, home=tmp_path)
-    assert "error" in out
 
 
 @pytest.mark.asyncio
@@ -180,13 +159,11 @@ def test_new_skill_starters_present() -> None:
 
     for name in (
         "task-decomposer",
-        "evening-reflection",
-        "habit-tracker",
-        "goal-alignment",
-        "monthly-report",
+        "tool-authoring",
         "script-authoring",
         "data-pipeline",
         "daily-briefing",
+        "scheduling",
     ):
         assert name in SKILL_STARTERS
 

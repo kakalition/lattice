@@ -80,34 +80,6 @@ Example:
 - Ask the user to edit `lattice.yaml` for agent-authored DBs — `register` handles it.
 """,
     ),
-    "personal-metrics": (
-        "Log/query personal habit time-series via execute_script skills/personal-metrics/scripts/metrics.py.",
-        """---
-name: personal-metrics
-description: "Log/query personal habit time-series via execute_script skills/personal-metrics/scripts/metrics.py."
----
-# Personal metrics
-Use for habit check-ins, streaks, mood/focus/reps logs, and metric trends.
-Skip for one-off numbers the user does not want tracked.
-
-## Script
-`skills/personal-metrics/scripts/metrics.py` — stdlib only; run through `execute_script`
-with `language="python"` and `args=[...]`. DB: `.lattice/metrics/metrics.db`.
-
-## Procedure
-1. Log a point:
-   `execute_script(language="python", path="skills/personal-metrics/scripts/metrics.py", args=["log", "habit.meditation", "1", "--unit", "bool"])`
-2. Query one metric (adds count/avg/sum/min/max, streaks, per-day totals):
-   `args=["query", "habit.meditation"]`
-3. Window query across metrics: `args=["query", "--since", "2026-09-01", "--until", "2026-09-30"]`
-4. Keep metric names stable (e.g. `habit.meditation`) — renaming breaks streaks.
-5. Chart trends from the by_day output with `generate_chart` when asked.
-
-## Pitfalls
-- `--at` accepts ISO date or date-time; date-only means 00:00Z.
-- `--tags` is a JSON object (a bare label becomes `{"label": …}`).
-""",
-    ),
     "scheduling": (
         "Create/list/cancel reminders via execute_script skills/scheduling/scripts/schedule.py.",
         """---
@@ -235,96 +207,13 @@ Use when the user asks to plan, break down, or organize a multi-step personal go
 2. Draft 3–9 concrete next actions (verb-first, ≤1 sitting each).
 3. Write them with `todo` in dependency order; note blockers in the text.
 4. For time-bound milestones, `schedule_add` checkpoints (not every micro-task).
-5. Optionally `memory_add` the goal statement for later goal-alignment.
+5. Optionally `memory_add` the goal statement for later review.
 
 ## Output shape
 Goal → ordered checklist → scheduled checkpoints → first action to start now.
 
 ## Pitfalls
 - Oversized tasks; inventing calendars without approval; skipping clarify on vague goals.
-""",
-    ),
-    "evening-reflection": (
-        "End-of-day review: todos, clarify wins/blockers, metric_log habits, memory_add lessons.",
-        """---
-name: evening-reflection
-description: "End-of-day review: todos, clarify wins/blockers, metric_log habits, memory_add lessons."
----
-# Evening reflection
-Run at end of day or when the user asks to wrap up / journal.
-
-## Procedure
-1. `timezone_get` + `todo` — what finished vs open.
-2. `clarify` (or Telegram prompts): today's win, blocker, energy 1–5.
-3. `metric_log` habit/mood/focus points the user confirms (never invent completions).
-4. `memory_add` 1–3 durable lessons or commitments.
-5. Optionally `schedule_add` one carry-over reminder.
-
-## Output shape
-Wins → Blockers → Metrics logged → Memory notes → Tomorrow's first step.
-
-## Pitfalls
-- Logging habits the user did not confirm; long essays on Telegram.
-""",
-    ),
-    "habit-tracker": (
-        "Log habits with metric_log, streaks via metric_query, charts via generate_chart.",
-        """---
-name: habit-tracker
-description: "Log habits with metric_log, streaks via metric_query, charts via generate_chart."
----
-# Habit tracker
-Use for daily habit check-ins, streak checks, or habit progress charts.
-
-## Procedure
-1. Confirm habit name (stable metric name, e.g. `habit.meditation`) and value (usually 1).
-2. `metric_log` the completion (optional note/tags).
-3. `metric_query` that name for streak/avg and recent by_day rows.
-4. On request, `generate_chart` from the by_day series; keep files under workspace.
-5. Flag drop-offs (gaps ≥2 days) and propose a tiny recovery action — do not nag.
-
-## Pitfalls
-- Renaming metrics casually (breaks streaks); charting without querying first.
-""",
-    ),
-    "goal-alignment": (
-        "Audit stated goals vs todo/metric effort; update memory when priorities drift.",
-        """---
-name: goal-alignment
-description: "Audit stated goals vs todo/metric effort; update memory when priorities drift."
----
-# Goal alignment
-Periodic priority audit (weekly/monthly or on request).
-
-## Procedure
-1. `memory_search` for active goals / priorities.
-2. Inspect `todo` and `metric_query` for where time/effort actually went.
-3. Name mismatches (stated vs observed) without judgment.
-4. Propose goal edits; on approval `memory_update` / `memory_add`.
-5. Optional: one `schedule_add` for the next alignment review.
-
-## Pitfalls
-- Silent goal deletes; treating in-session todos as life history.
-""",
-    ),
-    "monthly-report": (
-        "Month metrics + memory into generate_chart visuals and a generate_pdf report.",
-        """---
-name: monthly-report
-description: "Month metrics + memory into generate_chart visuals and a generate_pdf report."
----
-# Monthly report
-Use for month-in-review documents.
-
-## Procedure
-1. Confirm month window (`timezone_get`).
-2. `metric_query` key metrics with since/until for the month.
-3. `memory_search` for themes; `session_search` if needed for major events.
-4. `generate_chart` for 1–3 trends; `generate_pdf` assembling narrative + chart paths.
-5. Keep paths under workspace; on Telegram summarize + attach when media is supported.
-
-## Pitfalls
-- Giant PDF pastes in chat; inventing metrics not in the DB.
 """,
     ),
     "script-authoring": (
@@ -375,34 +264,6 @@ Automate multi-step local data processing.
 
 ## Pitfalls
 - Touching `state.db`; skipping backups; running unbounded scripts.
-""",
-    ),
-    "office-xlsx": (
-        "Create/read/edit Excel .xlsx and CSV via shell + openpyxl when available.",
-        """---
-name: office-xlsx
-description: "Create/read/edit Excel .xlsx and CSV via shell + openpyxl when available."
----
-# Office xlsx
-Use for spreadsheet create/inspect/edit and CSV interop. Not for legacy `.xls`
-(convert first with LibreOffice if the user has it).
-
-## Prerequisites
-- Prefer `shell` with Python + `openpyxl` (`uv run` / `python -c` / short scripts).
-- HITL may gate shell — explain the command. Keep work under the workspace.
-- Do not vendor Hermes xlsx scripts; write small one-off scripts with `write_file` when needed.
-
-## Procedure
-1. Inventory: list sheets / dump a range as CSV or JSON via a short openpyxl snippet.
-2. Create: build from explicit data (CSV → xlsx, or openpyxl workbook write).
-3. Edit: change cells surgically; prefer scripts that set named cells over rewriting whole files.
-4. Verify: re-read the changed sheet and report dimensions + a sample of values.
-5. Formulas: note that openpyxl may store formulas without recalculating; use LibreOffice
-   headless recalc only if installed and the user wants it.
-
-## Pitfalls
-- Rewriting an entire workbook with `write_file` binary — use Python + openpyxl instead.
-- Assuming Excel is installed; stick to openpyxl/CSV unless the user confirms otherwise.
 """,
     ),
     "telegram-chat": (
@@ -684,7 +545,6 @@ def init_home(home: Path | None = None) -> Path:
             "sqlite/backups",
             "workspace",
             "browser/profile",
-            "metrics",
             "scripts",
             "tools",
         ):
@@ -840,8 +700,6 @@ def doctor_report(home: Path | None = None) -> list[str]:
             f"require_bwrap={scfg.require_bwrap} network={scfg.allow_network} "
             f"langs={','.join(scfg.languages)} dir={scripts_dir(root)}"
         )
-        metrics = root / "metrics" / "metrics.db"
-        lines.append(f"metrics.db: {'yes' if metrics.exists() else 'pending'}")
         from lattice.logging_config import log_dir
 
         log_file = log_dir() / "lattice.log"
