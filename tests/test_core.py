@@ -132,6 +132,40 @@ def test_shell_approval_patterns() -> None:
     assert not tool_needs_approval("read_file")
 
 
+def test_recursive_rm_scoped_to_authoring_roots(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = home / "workspace"
+    # Routine authoring cleanup inside the workspace / skill trees must not prompt.
+    assert not shell_needs_approval("rm -rf .lattice", home=home, workspace=workspace)
+    assert not shell_needs_approval(
+        f"cd {home}/skills/bookkeeping/scripts && rm -rf .lattice && echo cleaned",
+        home=home,
+        workspace=workspace,
+    )
+    assert not shell_needs_approval("rm -rf build", home=home, workspace=workspace)
+    # Anything reaching outside those roots still gates.
+    assert shell_needs_approval("rm -rf /", home=home, workspace=workspace)
+    assert shell_needs_approval("rm -rf /etc", home=home, workspace=workspace)
+    assert shell_needs_approval("rm -rf ~/data", home=home, workspace=workspace)
+    assert shell_needs_approval("rm -rf ../outside", home=home, workspace=workspace)
+    assert shell_needs_approval("rm -rf *", home=home, workspace=workspace)
+    assert shell_needs_approval("rm -rf /tmp/x", home=home, workspace=workspace)
+    # The tool gate plumbs the same roots.
+    assert not tool_needs_approval(
+        "shell", args={"command": "rm -rf .lattice"}, home=home, workspace=workspace
+    )
+
+
+def test_system_soul_guardrails() -> None:
+    from lattice.profiles.load import SYSTEM_SOUL, system_soul
+
+    text = system_soul()
+    assert "Do not offer to commit" in text
+    assert "Keep tool use tight" in text
+    # The embedded fallback must stay in sync with the shipped asset.
+    assert text.strip() == SYSTEM_SOUL.strip()
+
+
 def test_prompt_bundle_stable() -> None:
     b = PromptBundle(identity="I am Lattice", skill_index=build_skill_index_xml([("a", "b")]))
     assert b.system_prompt() == b.stable_system_prompt()

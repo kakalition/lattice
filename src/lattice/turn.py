@@ -6,8 +6,9 @@ import asyncio
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from lattice.agent_app import (
     TurnDeps,
@@ -243,6 +244,7 @@ async def run_turn(
             run_user_prompt,
             deps=deps,
             message_history=history or None,
+            usage_limits=UsageLimits(request_limit=settings.agent.iteration_budget),
         )
         return str(result.output), result.usage
 
@@ -273,6 +275,14 @@ async def run_turn(
                 except TurnCancelled:
                     raise
                 except Exception as exc:
+                    if isinstance(exc, UsageLimitExceeded):
+                        text = (
+                            f"I reached this turn's step budget "
+                            f"({settings.agent.iteration_budget}) before finishing. "
+                            "Ask me to continue and I'll pick up from here."
+                        )
+                        err = str(exc)
+                        break
                     reason = classify_provider_error(exc)
                     action = recovery_action(reason)
                     await events.on_status(f"provider {reason.value} → {action}")

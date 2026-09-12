@@ -6,6 +6,7 @@ Clarification choices go through ``clarify`` (not this gate).
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 # Shell HITL only for high-blast-radius commands.
 _SENSITIVE_ABS = (
@@ -14,7 +15,9 @@ _SENSITIVE_ABS = (
 )
 
 DANGEROUS_SHELL_PATTERNS = (
-    re.compile(r"\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*\b|--recursive\b)", re.I),
+    # Recursive ``rm`` is handled path-aware in ``_recursive_rm_needs_approval``:
+    # cleanup confined to the workspace / authoring roots is routine; anything
+    # reaching outside them (system paths, ``~``, ``..``, globs) still gates.
     re.compile(r"\brm\b[^\n;|&]*(?:\s/(?:\s|$)|(?:\$HOME|~)(?:/|\s|$))", re.I),
     re.compile(r"\b(?:sudo|doas)\b", re.I),
     re.compile(r"\b(?:mkfs(?:\.\w+)?|fdisk|diskutil\s+erase)\b", re.I),
@@ -68,7 +71,83 @@ DESTRUCTIVE_GATE_TOOLS = frozenset(
 )
 
 
-def shell_needs_approval(command: str) -> bool:
+# Recursive-delete handling. ``rm -rf`` is routine while authoring (cleaning a
+# stray dir or build output), but the blast radius depends on the target, not the
+# flag: deleting the workspace or a skill's own tree is fine, deleting ``/``,
+# ``~``, ``..``, a glob, or an absolute path outside those roots is not.
+_AUTHORING_HOME_DIRS = ("skills", "scripts", "tools")
+_RM_INVOCATION = re.compile(r"\brm\b([^\n;|&]*)", re.I)
+_RM_RECURSIVE_FLAG = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*r[a-zA-Z]*|--recursive)(?=\s|$)")
+_CD_INVOCATION = re.compile(r"(?:^|[;&|])\s*cd\s+([^\n;&|]+)")
+
+
+def _rm_recursive_targets(command: str) -> list[list[str]]:
+    invocations: list[list[str]] = []
+    for match in _RM_INVOCATION.finditer(command):
+        args = match.group(1)
+        if not _RM_RECURSIVE_FLAG.search(args):
+            continue
+        invocations.append([t for t in args.split() if not t.startswith("-")])
+    return invocations
+
+
+def _effective_cwd(command: str, workspace: Path | None) -> Path | None:
+    cwd = Path(workspace) if workspace else None
+    for match in _CD_INVOCATION.finditer(command):
+        raw = match.group(1).strip().strip("'\"")
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser()
+        if candidate.is_absolute():
+            cwd = candidate
+        elif cwd is not None:
+            cwd = cwd / candidate
+    return cwd
+
+
+def _safe_rm_roots(home: Path | None, workspace: Path | None) -> list[Path]:
+    roots: list[Path] = []
+    if workspace:
+        roots.append(Path(workspace))
+    if home:
+        base = Path(home)
+        roots.extend(base / name for name in _AUTHORING_HOME_DIRS)
+    return [root.resolve() for root in roots]
+
+
+def _recursive_rm_needs_approval(
+    command: str, *, home: Path | None, workspace: Path | None
+) -> bool:
+    invocations = _rm_recursive_targets(command)
+    if not invocations:
+        return False
+    cwd = _effective_cwd(command, workspace)
+    roots = _safe_rm_roots(home, workspace)
+    for targets in invocations:
+        if not targets:
+            return True
+        for target in targets:
+            if target.startswith(("~", "$HOME")) or "*" in target or target in {".", ".."}:
+                return True
+            path = Path(target)
+            if path.is_absolute():
+                resolved = path.resolve()
+            elif cwd is not None:
+                resolved = (cwd / path).resolve()
+            else:
+                resolved = None
+            if resolved is None or not any(
+                resolved == root or root in resolved.parents for root in roots
+            ):
+                return True
+    return False
+
+
+def shell_needs_approval(
+    command: str, *, home: Path | None = None, workspace: Path | None = None
+) -> bool:
+    if _recursive_rm_needs_approval(command, home=home, workspace=workspace):
+        return True
     return any(p.search(command) for p in DANGEROUS_SHELL_PATTERNS)
 
 
@@ -124,13 +203,19 @@ def script_needs_approval(code: str, *, language: str | None = None) -> bool:
     return any(p.search(body) for p in DANGEROUS_SCRIPT_PATTERNS)
 
 
-def tool_needs_approval(tool_name: str, *, args: dict | None = None) -> bool:
+def tool_needs_approval(
+    tool_name: str,
+    *,
+    args: dict | None = None,
+    home: Path | None = None,
+    workspace: Path | None = None,
+) -> bool:
     if tool_name not in DESTRUCTIVE_GATE_TOOLS:
         return False
     if tool_name == "shell":
         if not args:
             return False
-        return shell_needs_approval(str(args.get("command", "")))
+        return shell_needs_approval(str(args.get("command", "")), home=home, workspace=workspace)
     if tool_name == "sqlite_execute":
         if not args:
             return True

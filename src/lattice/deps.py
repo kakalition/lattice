@@ -133,7 +133,12 @@ async def maybe_approve(
     **args: Any,
 ) -> str | None:
     if needs is None:
-        needs = tool_needs_approval(tool_name, args=args)
+        needs = tool_needs_approval(
+            tool_name,
+            args=args,
+            home=ctx.deps.settings.home,
+            workspace=ctx.deps.workspace,
+        )
     if not needs:
         return None
     key = f"{tool_name}:{summary}"
