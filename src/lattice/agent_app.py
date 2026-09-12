@@ -261,6 +261,7 @@ def build_memory_for_profile(
         path=settings.home / "qdrant",
         llm_model=resolved,
         is_reasoning_model=settings.memory.is_reasoning_model,
+        extract_on_turn=settings.memory.extract_on_turn,
     )
 
 

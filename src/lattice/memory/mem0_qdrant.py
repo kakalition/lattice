@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import json
 import logging
 import os
 import threading
@@ -21,6 +20,16 @@ logger = logging.getLogger("lattice.memory")
 
 _EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 _EMBED_DIMS = 384
+
+# mem0 asks its LLM for a JSON fact list and hard-fails the whole batch on any
+# syntax drift (prose, markdown fences, trailing commas). Passed as mem0's
+# ``custom_instructions`` to steer weaker models back to strict JSON.
+_STRICT_JSON_INSTRUCTIONS = (
+    'Respond with ONLY a JSON object: {"memory": [{"id": "0", "text": "...", '
+    '"attributed_to": "user" or "assistant"}]}. No prose, no markdown fences, no '
+    "trailing commas, no comments; escape quotes and newlines. If nothing is worth "
+    'remembering, return {"memory": []}.'
+)
 
 _client_lock = threading.Lock()
 _clients: dict[str, Any] = {}
@@ -183,6 +192,7 @@ def _mem0_config(
             "provider": "openai",
             "config": llm_config,
         },
+        "custom_instructions": _STRICT_JSON_INSTRUCTIONS,
         "history_db_path": str(path / "history.db"),
     }
 
@@ -221,7 +231,9 @@ class InMemoryMemory:
         hits = [v for v in self._items.values() if q in v["text"].lower()]
         return hits[:limit]
 
-    async def add(self, text: str, *, metadata: dict[str, Any] | None = None) -> str:
+    async def add(
+        self, text: str, *, metadata: dict[str, Any] | None = None, infer: bool = True
+    ) -> str:
         mid = str(uuid.uuid4())
         self._items[mid] = {"id": mid, "text": text, "metadata": metadata or {}}
         return mid
@@ -248,10 +260,12 @@ class Mem0QdrantMemory:
         path: Path | None = None,
         llm_model: str | None = None,
         is_reasoning_model: bool | None = None,
+        extract_on_turn: bool = False,
     ) -> None:
         self.collection = collection
         self.path = path or (lattice_home() / "qdrant")
         self.path.mkdir(parents=True, exist_ok=True)
+        self._extract_on_turn = extract_on_turn
         self._fallback = InMemoryMemory(collection)
         self._memory: Any = None
         try:
@@ -325,12 +339,15 @@ class Mem0QdrantMemory:
         *,
         metadata: dict[str, Any] | None = None,
         probe_text: str | None = None,
+        infer: bool = True,
     ) -> str:
         """Store ``text``; return its id.
 
-        ``probe_text`` is a self-check hook: when set, it is stored verbatim with
-        inference disabled, so a health check can write an exact string and then
-        assert that search returns it — without paying for an extraction LLM call.
+        ``infer=False`` embeds and stores the text verbatim without an extraction
+        LLM call. ``probe_text`` is a self-check hook: when set, it is stored
+        verbatim with inference disabled, so a health check can write an exact
+        string and then assert that search returns it — without paying for an
+        extraction LLM call.
         """
         if self._memory is None:
             return await self._fallback.add(text, metadata=metadata)
@@ -345,7 +362,7 @@ class Mem0QdrantMemory:
                     )
                 else:
                     result = self._memory.add(
-                        text, user_id=self.collection, metadata=metadata or {}
+                        text, user_id=self.collection, metadata=metadata or {}, infer=infer
                     )
             return str(_first_memory_id(result) or uuid.uuid4())
         except Exception:
@@ -373,8 +390,25 @@ class Mem0QdrantMemory:
             await self._fallback.forget(memory_id)
 
     async def sync_turn(self, messages: list[dict[str, Any]]) -> None:
-        blob = json.dumps(messages[-6:], ensure_ascii=False)[:4000]
-        await self.add(blob, metadata={"source": "sync_turn"})
+        # Send a readable transcript, not a ``json.dumps`` blob: feeding the
+        # extractor JSON-shaped text invites JSON-shaped (and malformed) replies,
+        # and truncating a JSON blob mid-structure adds noise.
+        lines: list[str] = []
+        for msg in messages[-6:]:
+            content = msg.get("content")
+            role = str(msg.get("role") or "")
+            if role not in {"user", "assistant"}:
+                continue
+            if not isinstance(content, str) or not content.strip():
+                continue
+            label = "User" if role == "user" else "Assistant"
+            lines.append(f"{label}: {content.strip()[:600]}")
+        if lines:
+            await self.add(
+                "\n".join(lines),
+                metadata={"source": "sync_turn"},
+                infer=self._extract_on_turn,
+            )
 
     def close(self) -> None:
         """Best-effort teardown of the mem0 instance (vector store client is shared).
@@ -395,11 +429,12 @@ def build_memory(
     path: Path | None = None,
     llm_model: str | None = None,
     is_reasoning_model: bool | None = None,
+    extract_on_turn: bool = False,
 ) -> Mem0QdrantMemory:
     root = (path or (lattice_home() / "qdrant")).resolve()
     # Cache on the model as well: mem0 bakes it into the instance, so a profile
     # with a different model must not receive the wrong backend.
-    key = (str(root), collection, llm_model or "")
+    key = (str(root), collection, llm_model or "", extract_on_turn)
     with _client_lock:
         existing = _instances.get(key)
         if existing is not None:
@@ -410,6 +445,7 @@ def build_memory(
         path=root,
         llm_model=llm_model,
         is_reasoning_model=is_reasoning_model,
+        extract_on_turn=extract_on_turn,
     )
     with _client_lock:
         existing = _instances.get(key)

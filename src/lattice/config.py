@@ -65,13 +65,20 @@ class TelegramConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """mem0 backend tuning.
 
-    mem0 calls an LLM to extract facts from turns. Reasoning models spend most of
-    the token budget on hidden reasoning, so the non-reasoning parameter set
-    (which sends ``max_tokens``) truncates their JSON and extraction silently
-    yields nothing. mem0 auto-detects only the o1/o3/gpt-5 families, so models
-    like mercury-2.5 need an explicit override.
+    mem0 can call an LLM to extract facts from turns. That extraction is fragile
+    with models that ignore JSON mode (malformed JSON drops the whole batch) and
+    adds a round-trip to every turn, so it is **off by default**: turns are stored
+    with an embedding only. Enable ``extract_on_turn`` for automatic fact
+    extraction when the primary model emits strict JSON reliably.
+
+    Reasoning models spend most of the token budget on hidden reasoning, so the
+    non-reasoning parameter set (which sends ``max_tokens``) truncates their JSON
+    and extraction silently yields nothing. mem0 auto-detects only the
+    o1/o3/gpt-5 families, so models like mercury-2.5 need an explicit override.
     """
 
+    # Run mem0's LLM fact-extraction each turn. Off = embed + store the transcript.
+    extract_on_turn: bool = False
     # None = auto-detect from the model name; True/False force the behaviour.
     is_reasoning_model: bool | None = None
     # Verify the memory round-trip at boot (write a private token, search it back).
@@ -295,6 +302,15 @@ agent:
   # Explicit prompt caching for OpenRouter Anthropic/Gemini models.
   # prompt_cache: true
   # prompt_cache_ttl: 5m   # 5m | 1h (1h is Anthropic-only)
+
+memory:
+  # Run mem0's LLM fact-extraction on every turn. Off (default) stores the turn
+  # transcript with an embedding only — no LLM call, no extraction-JSON failures.
+  extract_on_turn: false
+  # None = auto-detect; True/False force mem0's reasoning-model parameter set.
+  is_reasoning_model: null
+  # Verify the memory round-trip at boot (embedding only, no LLM).
+  self_check: true
 
 tools:
   allow: ["*"]

@@ -111,6 +111,69 @@ def test_mem0_llm_model_ignores_legacy_env(monkeypatch, tmp_path: Path) -> None:
     assert cfg["llm"]["config"]["model"] == "inception/mercury-2.5"
 
 
+def test_mem0_config_requests_strict_json(tmp_path: Path) -> None:
+    """Fact extraction hard-fails on JSON drift; the prompt must demand JSON only."""
+    from lattice.memory.mem0_qdrant import _mem0_config
+
+    cfg = _mem0_config(collection="c", path=tmp_path, client=None, llm_model="m")
+    instructions = cfg["custom_instructions"]
+    assert "ONLY a JSON object" in instructions
+    assert "trailing commas" in instructions
+
+
+def test_sync_turn_stores_without_extraction_by_default() -> None:
+    """Regression: sync_turn dumped a json.dumps blob into the extractor."""
+    import asyncio
+
+    captured: dict = {}
+
+    async def fake_add(self, text, *, metadata=None, probe_text=None, infer=True):  # type: ignore[no-untyped-def]
+        captured["text"] = text
+        captured["infer"] = infer
+        return "id"
+
+    mem = Mem0QdrantMemory.__new__(Mem0QdrantMemory)
+    mem.collection = "c"
+    mem._memory = object()  # type: ignore[assignment]
+    mem._extract_on_turn = False
+    mem.add = fake_add.__get__(mem, Mem0QdrantMemory)  # type: ignore[method-assign]
+
+    asyncio.run(
+        mem.sync_turn(
+            [
+                {"role": "user", "content": "I spent Rp 25.000 on lunch"},
+                {"role": "assistant", "content": "Logged it."},
+                {"role": "tool", "content": "ignored"},
+                {"role": "user", "content": "   "},
+            ]
+        )
+    )
+    text = captured["text"]
+    assert text == "User: I spent Rp 25.000 on lunch\nAssistant: Logged it."
+    assert not text.startswith("["), "still sending a JSON blob"
+    # No extraction LLM call by default.
+    assert captured["infer"] is False
+
+
+def test_sync_turn_extracts_only_when_enabled() -> None:
+    import asyncio
+
+    captured: dict = {}
+
+    async def fake_add(self, text, *, metadata=None, probe_text=None, infer=True):  # type: ignore[no-untyped-def]
+        captured["infer"] = infer
+        return "id"
+
+    mem = Mem0QdrantMemory.__new__(Mem0QdrantMemory)
+    mem.collection = "c"
+    mem._memory = object()  # type: ignore[assignment]
+    mem._extract_on_turn = True
+    mem.add = fake_add.__get__(mem, Mem0QdrantMemory)  # type: ignore[method-assign]
+
+    asyncio.run(mem.sync_turn([{"role": "user", "content": "hi"}]))
+    assert captured["infer"] is True
+
+
 def test_build_memory_for_profile_uses_primary_model(tmp_path: Path, monkeypatch) -> None:
     """The mem0 backend must carry the resolved primary model."""
     import lattice.agent_app as agent_app
@@ -120,9 +183,17 @@ def test_build_memory_for_profile_uses_primary_model(tmp_path: Path, monkeypatch
     # Avoid touching the network/embedder: only assert the resolved model.
     captured: dict = {}
 
-    def fake_build_memory(*, collection, path=None, llm_model=None, is_reasoning_model=None):
+    def fake_build_memory(
+        *,
+        collection,
+        path=None,
+        llm_model=None,
+        is_reasoning_model=None,
+        extract_on_turn=None,
+    ):
         captured["model"] = llm_model
         captured["reasoning"] = is_reasoning_model
+        captured["extract_on_turn"] = extract_on_turn
         return object()
 
     monkeypatch.setattr(agent_app, "build_memory", fake_build_memory)
@@ -131,6 +202,11 @@ def test_build_memory_for_profile_uses_primary_model(tmp_path: Path, monkeypatch
 
     agent_app.build_memory_for_profile(settings, Profile(id="p"))
     assert captured["model"] == "inception/mercury-2.5"
+    assert captured["extract_on_turn"] is False  # opt-in, default off
+
+    settings.memory.extract_on_turn = True
+    agent_app.build_memory_for_profile(settings, Profile(id="p"))
+    assert captured["extract_on_turn"] is True
 
     agent_app.build_memory_for_profile(settings, Profile(id="q", primary_model="other/model"))
     assert captured["model"] == "other/model"
