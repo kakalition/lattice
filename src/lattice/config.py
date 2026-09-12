@@ -74,6 +74,9 @@ class MemoryConfig(BaseModel):
 
     # None = auto-detect from the model name; True/False force the behaviour.
     is_reasoning_model: bool | None = None
+    # Verify the memory round-trip at boot (write a private token, search it back).
+    # Costs one embedding and no LLM call, which is why it is on by default.
+    self_check: bool = True
 
 
 class AgentConfig(BaseModel):

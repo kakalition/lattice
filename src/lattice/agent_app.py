@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -24,6 +25,8 @@ from lattice.profiles import Profile, merge_tool_policy
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers import build_openai_model
 from lattice.tools.agent import build_toolsets
+
+logger = logging.getLogger("lattice.agent_app")
 
 
 def build_prompt_bundle(
@@ -156,3 +159,21 @@ def build_memory_for_profile(settings: LatticeSettings, profile: Profile) -> Mem
         llm_model=auxiliary_model_name(settings, profile_aux=profile.auxiliary_model),
         is_reasoning_model=settings.memory.is_reasoning_model,
     )
+
+
+def verify_memory_for_profile(settings: LatticeSettings, profile: Profile) -> list[str]:
+    """Boot-time memory health check. Returns notes; raises ``RuntimeError`` on failure.
+
+    Guards a silent failure mode: memory search once returned zero hits forever
+    because a swallowed exception hid a mem0 signature mismatch. A round-trip
+    probe turns that into a loud failure at startup.
+    """
+    from lattice.memory import probe_memory
+    from lattice.profiles import get_profile
+
+    profile = get_profile(profile.id, settings.home)
+    collection = profile.memory_collection or f"lattice-{profile.id}"
+    memory = build_memory_for_profile(settings, profile)
+    logger.info("memory self-check: probing collection %s", collection)
+    probe_memory(memory, collection=collection)
+    return [f"memory self-check: ok ({collection})"]

@@ -634,7 +634,22 @@ def doctor_report(home: Path | None = None) -> list[str]:
 
         lines.append(f"timezone: {settings.timezone or resolve_timezone(root)}")
         lines.append(f"config: {user_config_path()}")
-        lines.append(f"profiles: {', '.join(list_profiles(root)) or '(none)'}")
+        profiles = list_profiles(root)
+        lines.append(f"profiles: {', '.join(profiles) or '(none)'}")
+        if settings.memory.self_check and profiles:
+            try:
+                from lattice.agent_app import verify_memory_for_profile
+                from lattice.profiles import get_profile
+
+                lines.extend(
+                    verify_memory_for_profile(settings, get_profile(settings.default_profile, root))
+                )
+            except Exception as exc:
+                lines.append(f"memory self-check: FAILED — {exc}")
+        else:
+            lines.append(
+                f"memory self-check: {'skipped (disabled)' if not settings.memory.self_check else 'skipped (no profile)'}"
+            )
         state = root / "state.db"
         lines.append(f"state.db: {'yes' if state.exists() else 'no'}")
         skills = root / "skills"

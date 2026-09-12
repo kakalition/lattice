@@ -30,6 +30,31 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _boot_memory_self_check(settings, profile: str) -> None:
+    """Round-trip the memory backend at boot; abort loudly if it is broken.
+
+    A memory search that silently returns nothing is worse than a crash: the
+    agent still answers, just without ever recalling anything. Fail fast instead.
+    """
+    if not settings.memory.self_check:
+        logger.info("memory self-check disabled by config")
+        return
+    from lattice.agent_app import verify_memory_for_profile
+    from lattice.profiles import get_profile
+
+    try:
+        notes = verify_memory_for_profile(settings, get_profile(profile, settings.home))
+    except Exception as exc:
+        console.print(f"[red]memory self-check failed:[/] {exc}")
+        console.print(
+            "[dim]Memory would silently return no results. Fix the backend, or set "
+            "`memory.self_check: false` in lattice.yaml to boot without it.[/]"
+        )
+        raise typer.Exit(1) from exc
+    for note in notes:
+        logger.info("%s", note)
+
+
 @app.callback()
 def main() -> None:
     """Lattice — thin-waist personal agent."""
@@ -43,7 +68,9 @@ def version() -> None:
 
 @app.command("init")
 def init_cmd(
-    home: Path | None = typer.Option(None, help="Override Lattice home (default <project>/.lattice)"),
+    home: Path | None = typer.Option(
+        None, help="Override Lattice home (default <project>/.lattice)"
+    ),
 ) -> None:
     """Create <project>/.lattice layout, default profile, and skill starters."""
     root = init_home(home)
@@ -129,6 +156,7 @@ def chat(
     init_home(settings.home)
     setup_logging()
     ensure_oneshot_setup(settings.home, console=console)
+    _boot_memory_self_check(settings, profile)
 
     async def handler(inbound):
         inbound.profile_id = inbound.profile_id or profile
@@ -171,6 +199,7 @@ def gateway(
     settings.timezone = ensure_timezone(settings.home)
     log_path = setup_logging()
     ensure_oneshot_setup(settings.home, console=console)
+    _boot_memory_self_check(settings, settings.default_profile)
     lock = PidfileLock(settings.home / "gateway.pid")
     lock.acquire()
     store = SessionStore(settings.home / "state.db")

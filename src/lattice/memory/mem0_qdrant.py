@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import json
 import logging
@@ -186,6 +187,28 @@ def _mem0_config(
     }
 
 
+def _first_memory_id(result: Any) -> str | None:
+    """Pull the first stored memory id out of a mem0 ``add`` return value.
+
+    mem0 wraps results differently per call shape: ``{"results": [...]}`` when
+    it infers, a bare list when ``infer=False``, and occasionally a flat dict.
+    Reading only ``result["id"]`` silently missed all of these and made ``add``
+    hand back a fabricated uuid — so a follow-up update/forget hit nothing.
+    """
+    if isinstance(result, dict):
+        if result.get("results"):
+            return _first_memory_id(result["results"])
+        mid = result.get("id") or result.get("memory_id")
+        return str(mid) if mid else None
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict):
+                mid = item.get("id") or item.get("memory_id")
+                if mid:
+                    return str(mid)
+    return None
+
+
 class InMemoryMemory:
     """Fallback when mem0/qdrant are unavailable."""
 
@@ -259,7 +282,9 @@ class Mem0QdrantMemory:
                 "mem0 backend unavailable; memory will use the in-memory fallback", exc_info=True
             )
 
-    async def search(self, query: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    async def search(
+        self, query: str, *, limit: int = 5, include_probes: bool = False
+    ) -> list[dict[str, Any]]:
         if self._memory is None:
             return await self._fallback.search(query, limit=limit)
         try:
@@ -282,22 +307,47 @@ class Mem0QdrantMemory:
                             "metadata": item.get("metadata") or {},
                         }
                     )
-            return out
+            # Probe rows are internal health-check artefacts; never surface them.
+            # They are also deleted by probe_memory, but a crash mid-probe could
+            # leave one behind, and it must not leak into the model's context.
+            if include_probes:
+                return out
+            return [m for m in out if not str(m["text"]).startswith(_PROBE_PREFIX)]
         except Exception:
             logger.warning(
                 "mem0 search failed; returning empty results from the fallback", exc_info=True
             )
             return await self._fallback.search(query, limit=limit)
 
-    async def add(self, text: str, *, metadata: dict[str, Any] | None = None) -> str:
+    async def add(
+        self,
+        text: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        probe_text: str | None = None,
+    ) -> str:
+        """Store ``text``; return its id.
+
+        ``probe_text`` is a self-check hook: when set, it is stored verbatim with
+        inference disabled, so a health check can write an exact string and then
+        assert that search returns it — without paying for an extraction LLM call.
+        """
         if self._memory is None:
             return await self._fallback.add(text, metadata=metadata)
         try:
             with _quiet_mem0():
-                result = self._memory.add(text, user_id=self.collection, metadata=metadata or {})
-            if isinstance(result, dict):
-                return str(result.get("id") or result.get("memory_id") or uuid.uuid4())
-            return str(uuid.uuid4())
+                if probe_text is not None:
+                    result = self._memory.add(
+                        probe_text,
+                        user_id=self.collection,
+                        metadata=metadata or {},
+                        infer=False,
+                    )
+                else:
+                    result = self._memory.add(
+                        text, user_id=self.collection, metadata=metadata or {}
+                    )
+            return str(_first_memory_id(result) or uuid.uuid4())
         except Exception:
             logger.warning("mem0 add failed; storing in the in-memory fallback", exc_info=True)
             return await self._fallback.add(text, metadata=metadata)
@@ -367,6 +417,67 @@ def build_memory(
             return existing
         _instances[key] = inst
         return inst
+        _instances[key] = inst
+        return inst
+
+
+# A nonsense token: unique per run so repeated probes cannot match each other,
+# and lexically unlikely to collide with real user memories.
+_PROBE_PREFIX = "lattice-probe"
+
+
+def probe_memory(
+    memory: Mem0QdrantMemory,
+    *,
+    collection: str | None = None,
+) -> None:
+    """Assert the memory round-trip works; raise ``RuntimeError`` if it does not.
+
+    Writes a unique token via the same code path the tools use, then searches for
+    it. A break in ``add``/``search`` — a stale mem0 call signature, a mis-scoped
+    filter, a dead backend — fails here loudly at boot instead of silently
+    returning zero hits for the rest of the session.
+
+    The write uses ``infer=False``, so it costs one embedding and no LLM call.
+    The probe row is deleted afterwards; it never reaches the extraction
+    pipeline, is filtered out of normal search results, and uses a zero vector
+    so it is never a semantic near-neighbour.
+    """
+    token = f"{_PROBE_PREFIX}-{uuid.uuid4().hex}"
+    scope = collection or memory.collection
+
+    # A working fallback still means memories evaporate at exit and are invisible
+    # to future turns, so treat an unavailable backend as a failed check rather
+    # than letting the round-trip pass against in-memory storage.
+    if memory._memory is None:
+        raise RuntimeError(
+            "memory self-check FAILED: the mem0/Qdrant backend is unavailable and the "
+            "in-memory fallback is active, so memories will not persist across turns "
+            "(see the 'mem0 backend unavailable' warning for the underlying error)"
+        )
+
+    async def _round_trip() -> str | None:
+        await memory.add(token, metadata={"source": "self_check"}, probe_text=token)
+        hits = await memory.search(token, limit=15, include_probes=True)
+        found = next((h for h in hits if token in str(h.get("text") or "")), None)
+        if found is not None:
+            try:
+                await memory.forget(str(found.get("id") or ""))
+            except Exception:  # cleanup is best-effort; never mask the result
+                logger.debug("self-check probe cleanup failed", exc_info=True)
+        return (
+            None
+            if found is not None
+            else (
+                f"memory self-check FAILED: wrote a probe into collection {scope!r} but search "
+                "did not return it. Memory writes and reads are out of sync — look for a mem0 "
+                "API signature mismatch (e.g. search() filters) in lattice.memory.mem0_qdrant"
+            )
+        )
+
+    detail = asyncio.run(_round_trip())
+    if detail is not None:
+        raise RuntimeError(detail)
 
 
 # Explicit teardown at exit; without it QdrantClient.__del__ closes during

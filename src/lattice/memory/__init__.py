@@ -5,6 +5,7 @@ from lattice.memory.mem0_qdrant import (
     Mem0QdrantMemory,
     build_memory,
     close_memory,
+    probe_memory,
 )
 from lattice.memory.tools import memory_add, memory_forget, memory_search, memory_update
 
@@ -19,4 +20,5 @@ __all__ = [
     "memory_forget",
     "memory_search",
     "memory_update",
+    "probe_memory",
 ]

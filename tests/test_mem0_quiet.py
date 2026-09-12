@@ -237,3 +237,116 @@ def test_client_created_after_close_is_still_reaped(tmp_path: Path) -> None:
     proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert "QdrantClient.__del__" not in proc.stderr, "client leaked past close_memory()"
+
+
+# --- memory boot self-check -------------------------------------------------
+
+
+def _fake_backend(tmp_path: Path, *, search_ok: bool = True) -> Mem0QdrantMemory:
+    """A Mem0QdrantMemory whose mem0 inner object is a dict-backed stand-in."""
+    from lattice.memory.mem0_qdrant import InMemoryMemory
+
+    mem = Mem0QdrantMemory.__new__(Mem0QdrantMemory)
+    mem.collection = "lattice-probecheck"
+    mem.path = tmp_path
+    # Real instances always carry a fallback; the wrapper's except paths use it.
+    mem._fallback = InMemoryMemory("lattice-probecheck")  # type: ignore[assignment]
+
+    class _Inner:
+        def __init__(self) -> None:
+            self.rows: dict[str, str] = {}
+
+        def add(self, text, *, user_id=None, metadata=None, infer=True):
+            if isinstance(text, list):
+                text = text[0]["content"]
+            if not infer:
+                self.rows[text] = text
+                return [{"id": text, "memory": text, "event": "ADD"}]
+            self.rows[text] = text
+            return {"results": [{"id": text, "memory": text, "event": "ADD"}]}
+
+        def search(self, query, *, filters=None, limit=5):
+            if not search_ok:
+                raise ValueError("search API mismatch")
+            assert filters and "user_id" in filters, "probe/search must scope by filters"
+            hits = [{"id": k, "memory": v, "metadata": {}} for k, v in self.rows.items()]
+            return {"results": hits[:limit]}
+
+        def delete(self, memory_id):
+            self.rows.pop(memory_id, None)
+
+    mem._memory = _Inner()  # type: ignore[assignment]
+    return mem
+
+
+def test_probe_memory_round_trips_and_cleans_up(tmp_path: Path) -> None:
+    """A healthy backend must pass and leave nothing behind."""
+    from lattice.memory.mem0_qdrant import probe_memory
+
+    mem = _fake_backend(tmp_path)
+    probe_memory(mem, collection="lattice-probecheck")
+
+    assert mem._memory.rows == {}, "probe row leaked into the store"  # type: ignore[union-attr]
+
+
+def test_probe_memory_raises_when_search_is_broken(tmp_path: Path) -> None:
+    """Regression: this is the exact shape of the silent search failure.
+
+    Search raised, the wrapper swallowed it, and memory returned nothing forever.
+    The probe must convert that into a loud error at boot.
+    """
+    import pytest
+
+    from lattice.memory.mem0_qdrant import probe_memory
+
+    mem = _fake_backend(tmp_path, search_ok=False)
+    with pytest.raises(RuntimeError, match="search did not return it"):
+        probe_memory(mem, collection="lattice-probecheck")
+
+
+def test_probe_memory_raises_when_backend_is_unavailable(tmp_path: Path) -> None:
+    """A working fallback is still a failure: memories would not persist."""
+    import pytest
+
+    from lattice.memory.mem0_qdrant import probe_memory
+
+    mem = _fake_backend(tmp_path)
+    mem._memory = None  # type: ignore[assignment]
+    with pytest.raises(RuntimeError, match="backend is unavailable"):
+        probe_memory(mem, collection="lattice-probecheck")
+
+
+def test_probe_rows_never_reach_normal_search(tmp_path: Path) -> None:
+    """Probe tokens are internal: they must not surface to the model."""
+    import asyncio
+
+    from lattice.memory.mem0_qdrant import _PROBE_PREFIX
+
+    mem = _fake_backend(tmp_path)
+    mem._memory.add(f"{_PROBE_PREFIX}-leftover", user_id=mem.collection, infer=False)  # type: ignore[union-attr]
+
+    assert asyncio.run(mem.search("probe", limit=5)) == []
+    # ...but the self-check can still see them, or it would always fail.
+    assert asyncio.run(mem.search("probe", limit=5, include_probes=True))
+
+
+def test_add_returns_the_real_memory_id(tmp_path: Path) -> None:
+    """Regression: add() read result['id'] from a ``{"results": [...]}`` payload.
+
+    That always missed, so add() handed back a fabricated uuid and any follow-up
+    update/forget targeted a nonexistent memory.
+    """
+    import asyncio
+
+    from lattice.memory.mem0_qdrant import _first_memory_id
+
+    mem = _fake_backend(tmp_path)
+    mid = asyncio.run(mem.add("user likes dark mode"))
+    assert mid in mem._memory.rows  # type: ignore[union-attr]
+
+    # Both shapes mem0 returns, plus the flat-dict fallback.
+    assert _first_memory_id({"results": [{"id": "a"}]}) == "a"
+    assert _first_memory_id([{"id": "b"}]) == "b"
+    assert _first_memory_id({"id": "c"}) == "c"
+    assert _first_memory_id({"results": []}) is None
+    assert _first_memory_id(None) is None
