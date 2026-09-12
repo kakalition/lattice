@@ -164,6 +164,7 @@ def test_new_skill_starters_present() -> None:
         "data-pipeline",
         "daily-briefing",
         "scheduling",
+        "reminder",
     ):
         assert name in SKILL_STARTERS
 

@@ -197,6 +197,7 @@ def test_init_and_skills(tmp_path: Path) -> None:
     assert "profile-authoring" in names
     assert "daily-briefing" in names
     assert "scheduling" in names
+    assert "reminder" in names
     assert "script-authoring" in names
     assert "task-decomposer" in names
     # Removed built-ins must not come back.

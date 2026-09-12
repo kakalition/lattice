@@ -93,11 +93,15 @@ Use for timed reminders and recurring jobs. Prefer this over `todo` for anything
 `skills/scheduling/scripts/schedule.py` — stdlib only; run through `execute_script`
 with `language="python"` and `args=[...]`. Jobs: `.lattice/scheduler/jobs.json`.
 
+## Tone (important)
+`--reminder` is stored and delivered **verbatim** at fire time (no model rewrite), so
+write the finished, warm message — see the **reminder** skill.
+
 ## Procedure
 1. One-shot (local wall time; the saved timezone is applied automatically):
-   `execute_script(language="python", path="skills/scheduling/scripts/schedule.py", args=["add", "--reminder", "Stretch", "--run-at", "2026-09-12T22:45:00"])`
+   `execute_script(language="python", path="skills/scheduling/scripts/schedule.py", args=["add", "--reminder", "Hey — quick nudge to stretch your legs 🌿", "--run-at", "2026-09-12T22:45:00"])`
 2. Recurring (five-field cron in the saved timezone):
-   `args=["add", "--reminder", "Weekly review", "--cron", "0 18 * * 0"]`
+   `args=["add", "--reminder", "Weekly review time — let's look back on the week.", "--cron", "0 18 * * 0"]`
 3. List: `args=["list"]`. Cancel: `args=["cancel", "<job-id>"]`.
 4. `deliver` defaults to `telegram` (`telegram|cli|none`).
 5. Use `timezone_get` to confirm the zone; pass `--timezone` to override for one job.
@@ -105,6 +109,36 @@ with `language="python"` and `args=[...]`. Jobs: `.lattice/scheduler/jobs.json`.
 ## Pitfalls
 - Passing both `--run-at` and `--cron` is rejected.
 - Do not ask the user for a timezone unless they want to change it (use `timezone_set`).
+""",
+    ),
+    "reminder": (
+        "Phrase reminders as the final warm message; it is delivered verbatim at fire time.",
+        """---
+name: reminder
+description: "Phrase reminders as the final warm message; it is delivered verbatim at fire time."
+---
+# Reminder phrasing
+Use whenever you create a reminder (`schedule_add` or the **scheduling** script).
+
+## The key fact
+The `reminder` text is stored and delivered **verbatim** when it fires — no model
+rewrites it then. Whatever you write is exactly what the user receives, so write the
+finished message, not a bare note-to-self.
+
+## How to phrase
+- Write a short, warm, second-person nudge, as if speaking to the user.
+- Lead with a light human touch, then the action:
+  - "Hey — quick nudge to stretch your legs 🌿"
+  - "Morning! Time for your 10:00 call with Sam ☕"
+- Keep it to 1–2 short lines; include just enough context to act.
+- Name the time naturally; never show raw timestamps ("22:45:00Z").
+- Match the channel: on Telegram (see **telegram-chat**) keep it short, no tables/code.
+- Daily/recurring jobs: reword so it doesn't feel stale, but stay specific.
+
+## Don't
+- Pass a bare noun phrase ("standup") — that is what makes reminders feel flat.
+- Rely on the persona to warm it later; delivery is off-LLM and verbatim.
+- Mirror the user's terse wording if a warmer phrasing is natural.
 """,
     ),
     "cited-research": (

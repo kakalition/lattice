@@ -8,7 +8,7 @@ from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, traced
 from lattice.scheduler.tools import schedule_add as _schedule_add
-from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.agent._common import ToolsetT, ToolTier
 
 TIER = ToolTier.COLD
 
@@ -29,7 +29,9 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
         Or include an explicit offset (…+07:00). Recurring: cron five fields in timezone.
         Never pass timezone='' to force UTC; omit timezone to use config. Do not ask the
         user for timezone unless they want to change it (use timezone_set).
-        Prefer this over todo for anything time-based. deliver=telegram|cli|none."""
+        Prefer this over todo for anything time-based. deliver=telegram|cli|none.
+        `reminder` is delivered verbatim at fire time — write the final, warm message
+        (see the `reminder` skill), not a bare note-to-self."""
         tz = timezone or ctx.deps.settings.timezone
         return await traced(
             ctx,
