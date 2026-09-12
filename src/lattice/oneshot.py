@@ -84,15 +84,17 @@ def _already_recorded(state: dict[str, Any], step: OneshotStep) -> bool:
 
 
 def _chromium_executable() -> Path | None:
+    """Installed Chromium path, or None when unavailable.
+
+    Uses a filesystem lookup rather than ``sync_playwright`` so boot-time checks
+    stay silent — starting the driver leaves a pending connection task that is
+    reported as an error at shutdown.
+    """
     try:
-        from playwright.sync_api import sync_playwright
+        from lattice.paths import chromium_executable
     except ImportError:
         return None
-    try:
-        with sync_playwright() as pw:
-            return Path(pw.chromium.executable_path)
-    except Exception:
-        return None
+    return chromium_executable()
 
 
 def playwright_chromium_satisfied() -> bool:

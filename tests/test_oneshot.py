@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from lattice.oneshot import (
     ONESHOT_STEPS,
@@ -124,6 +127,79 @@ def test_ensure_oneshot_non_required_failure_does_not_raise(tmp_path: Path) -> N
 def test_oneshot_status_lines(tmp_path: Path) -> None:
     lines = oneshot_status(tmp_path)
     assert any(line.startswith("oneshot/playwright-chromium:") for line in lines)
+
+
+def test_chromium_executable_found_without_playwright_driver(tmp_path: Path, monkeypatch) -> None:
+    """The lookup must locate an installed Chromium purely from the filesystem.
+
+    Regression: resolving the path via ``sync_playwright().chromium.executable_path``
+    starts a driver that leaves a pending connection task, which Playwright then
+    reports as ``Task was destroyed but it is pending!`` on shutdown. This runs on
+    every gateway boot, so it has to stay silent.
+    """
+    import sys
+
+    from lattice.paths import _CHROMIUM_EXE_SUFFIXES, chromium_executable
+
+    suffixes = _CHROMIUM_EXE_SUFFIXES.get(sys.platform or "")
+    if not suffixes:  # pragma: no cover - unsupported platform
+        pytest.skip(f"no chromium suffix for platform {sys.platform!r}")
+
+    install = tmp_path / "chromium-9999"
+    exe = install / suffixes[0]
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+
+    assert chromium_executable() == exe
+
+
+def test_chromium_executable_prefers_newest_revision(tmp_path: Path, monkeypatch) -> None:
+    import sys
+
+    from lattice.paths import _CHROMIUM_EXE_SUFFIXES, chromium_executable
+
+    suffixes = _CHROMIUM_EXE_SUFFIXES.get(sys.platform or "")
+    if not suffixes:  # pragma: no cover - unsupported platform
+        pytest.skip(f"no chromium suffix for platform {sys.platform!r}")
+
+    for rev in ("100", "111"):
+        exe = tmp_path / f"chromium-{rev}" / suffixes[0]
+        exe.parent.mkdir(parents=True)
+        exe.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
+
+    found = chromium_executable()
+    assert found is not None
+    assert "chromium-111" in str(found), "stale revision won over the newest install"
+
+
+def test_chromium_executable_none_when_absent(tmp_path: Path, monkeypatch) -> None:
+    from lattice.paths import chromium_executable
+
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "empty"))
+    assert chromium_executable() is None
+
+
+def test_oneshot_chromium_probe_is_quiet(tmp_path: Path) -> None:
+    """The boot-time probe must not emit Playwright shutdown noise."""
+    import subprocess
+
+    from lattice.paths import chromium_executable
+
+    assert chromium_executable() is not None, "expected Chromium installed for this check"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from lattice.oneshot import _chromium_executable; print(_chromium_executable())",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "Task was destroyed" not in proc.stderr
+    assert "TargetClosedError" not in proc.stderr
 
 
 def test_daily_briefing_in_starters() -> None:
