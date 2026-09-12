@@ -16,6 +16,7 @@ from lattice.channel.live_status import (
     bind_live_events,
     idle_phrase,
     typing_keepalive,
+    warm_confirmation,
 )
 from lattice.channel.telegram.commands import COMMANDS
 from lattice.channel.telegram.formatting import chunk_text, markdown_to_telegram_html
@@ -435,7 +436,7 @@ class TelegramBot:
                 # not start a queued turn that never runs.
                 if self.hitl.resolve_text(str(uid), text):
                     with contextlib.suppress(Exception):
-                        await update.message.reply_text("ok")
+                        await update.message.reply_text(warm_confirmation("ok") or "ok")
                     return
                 q = self._queues.setdefault(uid, asyncio.Queue(maxsize=self.settings.queue_depth))
                 try:
@@ -517,9 +518,11 @@ class TelegramBot:
                             message_id=status.message_id,
                             text="…",
                         )
+                # A bare "ok" deserves something warmer and non-repeating.
+                reply_text = warm_confirmation(outbound.text) or outbound.text
                 await send_html(
                     chat_id,
-                    outbound.text,
+                    reply_text,
                     buttons=[{"label": b.label, "data": b.data} for b in outbound.buttons]
                     if outbound.buttons
                     else None,

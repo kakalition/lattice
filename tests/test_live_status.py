@@ -7,32 +7,59 @@ import asyncio
 import pytest
 
 from lattice.channel.live_status import (
-    IDLE_PHRASES,
     LiveTurnEvents,
+    PhraseDeck,
     bind_live_events,
     current_live_events,
     format_status_message,
-    format_tool_activity,
     idle_phrase,
+    thinking_phrase,
+    warm_confirmation,
 )
 
 
-def test_format_tool_activity() -> None:
-    assert format_tool_activity("shell", {"command": "ls -la"}).startswith("shell: ls")
-    assert "finances" in format_tool_activity("sqlite_query", {"database": "finances"})
-    assert format_tool_activity("skill_view", {"name": "weekly-review"}) == "skill: weekly-review…"
+def _has_emoji(text: str) -> bool:
+    return any(ord(ch) > 0x2190 for ch in text)
 
 
-def test_format_status_message() -> None:
-    assert format_status_message("thinking") == idle_phrase(0)
-    assert format_status_message("hitl_ask shell: rm") == "waiting for approval…"
-    assert format_status_message("already…") == "already…"
-    assert idle_phrase(0) in IDLE_PHRASES
-    assert idle_phrase(1) != idle_phrase(0)
+def test_thinking_phrases_are_creative_with_emoji() -> None:
+    seen = {thinking_phrase() for _ in range(300)}
+    assert len(seen) == 300, "deck should not repeat within a cycle"
+    assert all(_has_emoji(p) for p in seen)
+    joined = " ".join(seen)
+    for tool in ("shell", "read_file", "sqlite", "web_search", "execute_script"):
+        assert tool not in joined
+
+
+def test_phrase_deck_is_combinatorial() -> None:
+    deck = PhraseDeck(["a", "b"], ["x", "y", "z"], ["😀", "😎"])
+    assert deck.size == 12
+    assert len({deck.next() for _ in range(12)}) == 12
+
+
+def test_idle_phrase_custom_pool() -> None:
+    assert idle_phrase(0, ("alpha…", "bravo…")) == "alpha…"
+    assert idle_phrase(1, ("alpha…", "bravo…")) == "bravo…"
+
+
+def test_format_status_message_hides_tools() -> None:
+    out = format_status_message("hitl_ask shell: rm -rf")
+    assert _has_emoji(out)
+    assert "shell" not in out and "rm" not in out
+    assert _has_emoji(format_status_message("routing"))
+
+
+def test_warm_confirmation() -> None:
+    for ack in ("ok", "Okay.", "sure!", "done", "Got it", "👍"):
+        out = warm_confirmation(ack)
+        assert out and _has_emoji(out)
+    assert warm_confirmation("no") is None
+    assert warm_confirmation("Here is a full answer with detail.") is None
+    assert len({warm_confirmation("ok") for _ in range(50)}) > 1
 
 
 @pytest.mark.asyncio
-async def test_live_turn_events_throttles_and_binds() -> None:
+async def test_live_turn_events_never_shows_tools() -> None:
     seen: list[str] = []
 
     class Sink:
@@ -43,12 +70,14 @@ async def test_live_turn_events_throttles_and_binds() -> None:
     async with bind_live_events(live):
         assert current_live_events() is live
         await live.on_status("loading session")
-        await live.on_tool_start("shell", {"command": "echo hi"})
-        await live.on_tool_end("shell", "hi")
+        await live.on_tool_start("shell", {"command": "rm -rf /tmp/secret"})
+        await live.on_tool_end("shell", "done")
     assert current_live_events() is None
-    assert "loading session…" in seen
-    assert any(s.startswith("shell:") for s in seen)
-    assert any(s in IDLE_PHRASES for s in seen)
+    assert seen
+    joined = " ".join(seen)
+    assert "shell" not in joined
+    assert "secret" not in joined
+    assert "loading" not in joined
 
 
 @pytest.mark.asyncio
@@ -59,14 +88,14 @@ async def test_live_turn_events_coalesces_pending() -> None:
         async def set_status(self, text: str) -> None:
             seen.append(text)
 
-    live = LiveTurnEvents(Sink(), min_interval_s=0.2, phrase_interval_s=10.0)
-    await live.on_status("a")
-    await live.on_tool_start("shell", {"command": "one"})
-    await live.on_tool_start("shell", {"command": "two"})
+    phrases = ("alpha…", "bravo…", "charlie…", "delta…", "echo…")
+    live = LiveTurnEvents(Sink(), min_interval_s=0.2, phrase_interval_s=10.0, phrases=phrases)
+    await live.on_status("x")
+    await live.on_tool_start("shell", {})
     await asyncio.sleep(0.25)
     await live.close()
-    assert seen[0] == "a…"
-    assert any("two" in s for s in seen)
+    assert seen[0] == "alpha…"
+    assert "bravo…" in seen
 
 
 @pytest.mark.asyncio

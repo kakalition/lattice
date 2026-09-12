@@ -1,8 +1,15 @@
-"""Live turn progress for channel UIs (edit status bubble / spinner)."""
+"""Live turn progress for channel UIs (edit status bubble / spinner).
+
+Status text is deliberately persona-like: never tool names or internal
+diagnostics. Phrases are drawn from large shuffled decks so the same line is
+unlikely to appear twice within a month.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import random
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -13,20 +20,281 @@ from lattice.events import TurnEvents
 
 _bound: ContextVar[TurnEvents | None] = ContextVar("lattice_live_events", default=None)
 
-# Shown while the model is working between concrete tool/status updates.
-IDLE_PHRASES: tuple[str, ...] = (
-    "mulling it over…",
-    "weighing options…",
-    "connecting dots…",
-    "chewing on that…",
-    "sorting thoughts…",
-    "lining things up…",
-    "holding the thread…",
-    "figuring next step…",
-    "rereading the ask…",
-    "narrowing it down…",
-    "almost there…",
-    "stitching an answer…",
+
+class PhraseDeck:
+    """Endless, non-repeating shuffled sequence over actions × objects × emoji."""
+
+    def __init__(
+        self,
+        actions: Sequence[str],
+        objects: Sequence[str],
+        emojis: Sequence[str],
+        *,
+        template: str = "{emoji} {action} {object}…",
+        seed: int | None = None,
+    ) -> None:
+        self._actions = tuple(actions)
+        self._objects = tuple(objects)
+        self._emojis = tuple(emojis)
+        self._template = template
+        self._count = len(self._actions) * len(self._objects) * len(self._emojis)
+        self._rng = random.Random(seed)
+        self._deck: list[int] = []
+
+    @property
+    def size(self) -> int:
+        return self._count
+
+    def next(self) -> str:
+        if self._count == 0:
+            return "thinking…"
+        if not self._deck:
+            self._deck = list(range(self._count))
+            self._rng.shuffle(self._deck)
+        idx = self._deck.pop()
+        per_action = len(self._objects)
+        per_emoji = len(self._actions) * per_action
+        emoji = idx // per_emoji
+        rest = idx % per_emoji
+        action = rest // per_action
+        obj = rest % per_action
+        return self._template.format(
+            emoji=self._emojis[emoji], action=self._actions[action], object=self._objects[obj]
+        )
+
+
+_THINK_ACTIONS = (
+    "mulling over",
+    "scrolling through",
+    "turning over",
+    "sifting through",
+    "noodling on",
+    "poking at",
+    "sketching out",
+    "untangling",
+    "weighing up",
+    "lining up",
+    "chewing on",
+    "rummaging through",
+    "piecing together",
+    "double-checking",
+    "tracing",
+    "simmering on",
+    "gathering",
+    "polishing",
+    "re-reading",
+    "squinting at",
+    "tidying up",
+    "revisiting",
+    "threading together",
+    "mapping out",
+    "puzzling over",
+    "smoothing out",
+    "shuffling",
+    "plucking at",
+    "brewing",
+    "unpacking",
+)
+_THINK_OBJECTS = (
+    "the details",
+    "that thought",
+    "the moving parts",
+    "the fine print",
+    "the pieces",
+    "the options",
+    "the angles",
+    "the threads",
+    "the possibilities",
+    "the wording",
+    "the next step",
+    "the edges",
+    "the plan",
+    "the numbers",
+    "the loose ends",
+    "the shape of it",
+    "the trade-offs",
+    "the timing",
+    "the bigger picture",
+    "the small stuff",
+    "the breadcrumbs",
+    "the why",
+    "the how",
+    "the whole thing",
+    "a few ideas",
+    "the quiet parts",
+    "the half-formed bits",
+    "the shape of the answer",
+)
+_THINK_EMOJI = (
+    "🧠",
+    "✨",
+    "🤔",
+    "🌀",
+    "📝",
+    "🔍",
+    "🧩",
+    "💭",
+    "🌿",
+    "⚙️",
+    "🪄",
+    "📚",
+    "🗺️",
+    "🕰️",
+    "🫧",
+    "🧵",
+    "🛠️",
+    "🔮",
+    "🌟",
+    "☕",
+    "🍃",
+    "🧭",
+    "🪶",
+    "🎨",
+    "🧮",
+    "📎",
+    "🌤️",
+    "🪴",
+    "🫖",
+    "🧊",
+    "🕯️",
+    "🎧",
+    "💡",
+    "🔖",
+    "🧷",
+    "📐",
+    "🧪",
+    "🌈",
+    "🫐",
+    "🪄",
+    "🌸",
+    "🧸",
+    "🎐",
+    "🪁",
+)
+
+_APPROVAL_PHRASES = (
+    "just needs your go-ahead 🙏",
+    "waiting on your nod 👀",
+    "your call here ✨",
+    "ready when you are 🌿",
+    "just your blessing needed 🙌",
+    "holding for your approval 🫶",
+    "one tiny yes away ✅",
+    "at your discretion 🎛️",
+    "awaiting your verdict ⚖️",
+    "your move 🎲",
+    "just checking with you first 💬",
+    "standing by for your say-so 🛎️",
+)
+_RESUME_PHRASES = (
+    "back to it 🚀",
+    "carrying on ✨",
+    "picking the thread back up 🧵",
+    "right, onward 🌿",
+    "continuing where we left off 🪄",
+    "and we're moving again 🌊",
+    "resuming 🔄",
+    "back in the flow 🎐",
+)
+
+_CONFIRM_LEADS = (
+    "All set",
+    "Done",
+    "Sorted",
+    "Handled",
+    "Consider it done",
+    "Taken care of",
+    "Wrapped up",
+    "Good to go",
+    "Locked in",
+    "Nailed it",
+    "Tucked away",
+    "Finished up",
+    "All clear",
+    "Job done",
+    "That's handled",
+    "Done and dusted",
+    "Squared away",
+    "Off the list",
+)
+_CONFIRM_TAILS = (
+    "anything else?",
+    "nice and tidy.",
+    "just as you asked.",
+    "smoothly.",
+    "with care.",
+    "no loose ends.",
+    "ready when you are.",
+    "right on cue.",
+    "and looking good.",
+    "quietly handled.",
+    "exactly as planned.",
+    "one less thing to think about.",
+)
+_CONFIRM_EMOJI = (
+    "✨",
+    "🌿",
+    "💪",
+    "✅",
+    "🧺",
+    "🗂️",
+    "🌟",
+    "🤍",
+    "🎁",
+    "🚀",
+    "🔒",
+    "💫",
+    "🙌",
+    "🫶",
+    "🍃",
+    "🎐",
+    "🪄",
+    "🌸",
+    "☕",
+    "🧸",
+    "🌈",
+    "🕊️",
+    "🪴",
+    "🫧",
+)
+
+_THINK_DECK = PhraseDeck(_THINK_ACTIONS, _THINK_OBJECTS, _THINK_EMOJI)
+_CONFIRM_DECK = PhraseDeck(
+    _CONFIRM_LEADS,
+    _CONFIRM_TAILS,
+    _CONFIRM_EMOJI,
+    template="{emoji} {action} — {object}",
+)
+
+# A bare acknowledgement gets a warm, varied confirmation instead.
+_TERSE_ACKS = frozenset(
+    {
+        "ok",
+        "okay",
+        "k",
+        "kk",
+        "sure",
+        "done",
+        "got it",
+        "gotcha",
+        "alright",
+        "all right",
+        "will do",
+        "on it",
+        "sounds good",
+        "cool",
+        "nice",
+        "great",
+        "yep",
+        "yes",
+        "yup",
+        "no problem",
+        "np",
+        "sure thing",
+        "noted",
+        "understood",
+        "roger",
+    }
 )
 
 
@@ -38,77 +306,46 @@ def current_live_events() -> TurnEvents | None:
     return _bound.get()
 
 
+def thinking_phrase() -> str:
+    return _THINK_DECK.next()
+
+
 def idle_phrase(index: int = 0, phrases: Sequence[str] | None = None) -> str:
-    pool = phrases or IDLE_PHRASES
-    return pool[index % len(pool)]
+    """A creative thinking line. Explicit ``phrases`` are indexed modulo; the
+    default pool is a large shuffled deck."""
+    if phrases is not None:
+        pool = tuple(phrases)
+        if pool:
+            return pool[index % len(pool)]
+    return thinking_phrase()
 
 
-def format_tool_activity(name: str, args: dict[str, Any]) -> str:
-    """Short human-readable line for the active tool."""
-    if name == "shell":
-        cmd = str(args.get("command") or args.get("cmd") or "").strip().replace("\n", " ")
-        if cmd:
-            return f"shell: {_clip(cmd, 72)}…"
-        return "shell…"
-    if name in {"read_file", "write_file", "edit_file", "search_files", "ocr"}:
-        path = str(args.get("path") or args.get("query") or "").strip()
-        if path:
-            return f"{name}: {_clip(path, 64)}…"
-        return f"{name}…"
-    if name in {"generate_pdf", "generate_chart"}:
-        path = str(args.get("path") or "").strip()
-        title = str(args.get("title") or "").strip()
-        tip = title or path
-        if tip:
-            return f"{name}: {_clip(tip, 64)}…"
-        return f"{name}…"
-    if name.startswith("sqlite_"):
-        db = str(args.get("database") or args.get("name") or "").strip()
-        if db:
-            return f"{name} ({db})…"
-        return f"{name}…"
-    if name in {"web_search", "web_fetch"}:
-        q = str(args.get("query") or args.get("url") or "").strip()
-        if q:
-            return f"{name}: {_clip(q, 64)}…"
-        return f"{name}…"
-    if name == "skill_view":
-        skill = str(args.get("name") or args.get("skill") or "").strip()
-        if skill:
-            return f"skill: {skill}…"
-        return "skill…"
-    if name == "delegate":
-        return "delegate…"
-    if name.startswith("memory_"):
-        return f"{name}…"
-    if name.startswith("schedule_"):
-        return f"{name}…"
-    return f"{name}…"
+def warm_confirmation(text: str) -> str | None:
+    """Return a warm replacement if ``text`` is a bare acknowledgement, else None."""
+    raw = (text or "").strip()
+    if not raw or len(raw) > 24:
+        return None
+    normalized = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", "", raw.lower())).strip()
+    if normalized in _TERSE_ACKS:
+        return _CONFIRM_DECK.next()
+    # A lone emoji acknowledgement (e.g. "👍") also deserves something warmer.
+    if not normalized and any(ord(ch) > 0x2190 for ch in raw):
+        return _CONFIRM_DECK.next()
+    return None
 
 
 def format_status_message(message: str) -> str:
-    msg = (message or "").strip()
-    if not msg or _is_idle_status(msg):
-        return idle_phrase(0)
-    low = msg.lower()
+    """Map an internal status line to a persona-like phrase (no tool details)."""
+    low = (message or "").strip().lower()
     if low.startswith("hitl_ask"):
-        return "waiting for approval…"
+        return _pick(_APPROVAL_PHRASES)
     if low.startswith("hitl_decision"):
-        return "continuing…"
-    if msg.endswith("…") or msg.endswith("..."):
-        return msg
-    return f"{msg}…"
+        return _pick(_RESUME_PHRASES)
+    return thinking_phrase()
 
 
-def _is_idle_status(message: str) -> bool:
-    low = message.strip().lower().rstrip(".…")
-    return low in {"thinking", "idle", "working"}
-
-
-def _clip(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1] + "…"
+def _pick(pool: Sequence[str]) -> str:
+    return pool[random.randrange(len(pool))]
 
 
 class LiveTurnEvents:
@@ -127,7 +364,7 @@ class LiveTurnEvents:
         self.min_interval_s = min_interval_s
         self.phrase_interval_s = phrase_interval_s
         self.max_len = max_len
-        self.phrases: Sequence[str] = phrases or IDLE_PHRASES
+        self.phrases = phrases
         self._last_sent = 0.0
         self._last_text = ""
         self._pending: str | None = None
@@ -139,18 +376,25 @@ class LiveTurnEvents:
         self._closed = False
 
     async def on_status(self, message: str) -> None:
-        if _is_idle_status(message or ""):
-            await self._enter_idle()
+        low = (message or "").strip().lower()
+        if low.startswith("hitl_ask"):
+            await self._leave_idle()
+            await self._emit(_pick(_APPROVAL_PHRASES))
             return
-        await self._leave_idle()
-        await self._emit(format_status_message(message))
+        # Any other status keeps the warm, rotating thinking line going.
+        await self._enter_idle()
+
+    def _phrase(self) -> str:
+        text = idle_phrase(self._phrase_idx, self.phrases)
+        self._phrase_idx += 1
+        return text
 
     async def on_stream_delta(self, text: str) -> None:
         return None
 
     async def on_tool_start(self, name: str, args: dict[str, Any]) -> None:
-        await self._leave_idle()
-        await self._emit(format_tool_activity(name, args))
+        # Never surface tool names/arguments — just keep a warm thinking line.
+        await self._enter_idle()
 
     async def on_tool_end(self, name: str, result: str) -> None:
         await self._enter_idle()
@@ -176,8 +420,7 @@ class LiveTurnEvents:
     async def _enter_idle(self) -> None:
         if self._closed:
             return
-        phrase = idle_phrase(self._phrase_idx, self.phrases)
-        self._phrase_idx += 1
+        phrase = self._phrase()
         self._idle = True
         await self._emit(phrase)
         if self._idle_task is None or self._idle_task.done():
@@ -200,8 +443,7 @@ class LiveTurnEvents:
                 await asyncio.sleep(self.phrase_interval_s)
                 if self._closed or not self._idle:
                     return
-                phrase = idle_phrase(self._phrase_idx, self.phrases)
-                self._phrase_idx += 1
+                phrase = self._phrase()
                 await self._emit(phrase)
         except asyncio.CancelledError:
             return
