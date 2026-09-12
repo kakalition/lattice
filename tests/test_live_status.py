@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -59,7 +60,7 @@ def test_warm_confirmation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_turn_events_never_shows_tools() -> None:
+async def test_live_turn_events_lists_finished_steps() -> None:
     seen: list[str] = []
 
     class Sink:
@@ -72,11 +73,20 @@ async def test_live_turn_events_never_shows_tools() -> None:
         await live.on_status("loading session")
         await live.on_tool_start("shell", {"command": "rm -rf /tmp/secret"})
         await live.on_tool_end("shell", "done")
+        await live.on_tool_start("read_file", {"path": "notes.txt"})
+        await live.on_tool_end("read_file", "contents")
     assert current_live_events() is None
-    assert seen
-    joined = " ".join(seen)
-    assert "shell" not in joined
-    assert "secret" not in joined
+    joined = "\n".join(seen)
+    final = seen[-1]
+    # Thinking line carries elapsed time; finished steps follow as Markdown bullets.
+    assert re.search(r"\(\d+(?:\.\d+)?s\)", final)
+    assert "\n\n" in final
+    # Each step names the tool, describes the action, and hints at the argument.
+    assert "- ✅ **shell** · ran `rm -rf /tmp/secret`" in final
+    assert "- ✅ **read_file** · read `notes.txt`" in final
+    # Raw result bodies and internal status text never leak.
+    assert "contents" not in joined
+    assert "done" not in joined
     assert "loading" not in joined
 
 
@@ -94,8 +104,8 @@ async def test_live_turn_events_coalesces_pending() -> None:
     await live.on_tool_start("shell", {})
     await asyncio.sleep(0.25)
     await live.close()
-    assert seen[0] == "alpha…"
-    assert "bravo…" in seen
+    assert seen[0].startswith("alpha…")
+    assert any(s.startswith("bravo…") for s in seen)
 
 
 @pytest.mark.asyncio
@@ -116,6 +126,6 @@ async def test_idle_phrases_rotate() -> None:
     async with bind_live_events(live):
         await live.on_status("thinking")
         await asyncio.sleep(0.18)
-    assert seen[0] == "alpha…"
-    assert "bravo…" in seen
-    assert len({s for s in seen if s in phrases}) >= 2
+    assert seen[0].startswith("alpha…")
+    assert any(s.startswith("bravo…") for s in seen)
+    assert len({s.rsplit(" (", 1)[0] for s in seen}) >= 2

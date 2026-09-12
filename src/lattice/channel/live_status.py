@@ -302,6 +302,118 @@ class StatusSink(Protocol):
     async def set_status(self, text: str) -> None: ...
 
 
+def _format_duration(seconds: float) -> str:
+    return f"{seconds:.1f}s" if seconds < 9.95 else f"{seconds:.0f}s"
+
+
+# Most-recent finished steps kept in the status bubble; older ones are elided.
+_MAX_STEPS = 20
+
+
+def _clip(value: object, limit: int = 60) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _code(value: object, limit: int = 60) -> str:
+    clipped = _clip(value, limit)
+    return f"`{clipped}`" if clipped else ""
+
+
+def _quoted(value: object, limit: int = 50) -> str:
+    clipped = _clip(value, limit)
+    return f"“{clipped}”" if clipped else ""
+
+
+def _outcome(result: str) -> str:
+    head = (result or "").strip().lower()
+    if head.startswith(("error:", "execute_script error:")):
+        return "❌"
+    if head.startswith("denied"):
+        return "🚫"
+    if re.match(r"exit=[1-9]\d*", head):
+        return "⚠️"
+    return "✅"
+
+
+def _result_note(result: str) -> str:
+    """A short success/failure signal from the tool result (never full output)."""
+    head = (result or "").strip()
+    if not head:
+        return ""
+    match = re.match(r"exit=(\d+)", head)
+    if match:
+        return f"exit {match.group(1)}"
+    if head.lower().startswith(("error:", "denied")):
+        return _clip(head.splitlines()[0], 60)
+    return ""
+
+
+# tool name → (action verb, argument hint). Hints clip to keep the bubble compact
+# and deliberately exclude bulk content (file bodies, script code).
+_STEP_DESCRIBERS: dict[str, tuple[str, Callable[[dict[str, Any]], str]]] = {
+    "shell": ("ran", lambda a: _code(a.get("command"))),
+    "execute_script": (
+        "ran a script",
+        lambda a: _code(a.get("path") or f"{a.get('language', '')} inline"),
+    ),
+    "read_file": ("read", lambda a: _code(a.get("path"))),
+    "write_file": ("wrote", lambda a: _code(a.get("path"))),
+    "edit_file": ("edited", lambda a: _code(a.get("path"))),
+    "remove_path": ("removed", lambda a: _code(a.get("path"))),
+    "search_files": ("searched files for", lambda a: _code(a.get("pattern"))),
+    "ocr": ("extracted text from", lambda a: _code(a.get("path"))),
+    "generate_pdf": ("made a PDF at", lambda a: _code(a.get("path"))),
+    "generate_chart": ("made a chart at", lambda a: _code(a.get("path"))),
+    "web_search": ("searched the web for", lambda a: _quoted(a.get("query"))),
+    "web_fetch": ("fetched", lambda a: _code(a.get("url"))),
+    "browser_interact": ("browsed", lambda a: _code(a.get("action"))),
+    "browser_snapshot": ("captured the page", lambda a: ""),
+    "clarify": ("asked you", lambda a: _quoted(a.get("question"))),
+    "calculator": ("calculated", lambda a: _code(a.get("expression"))),
+    "todo": ("updated the todo list", lambda a: _code(a.get("action"))),
+    "schedule_add": ("scheduled", lambda a: _quoted(a.get("reminder"))),
+    "schedule_list": ("listed reminders", lambda a: ""),
+    "schedule_cancel": ("cancelled a reminder", lambda a: _code(a.get("job_id"))),
+    "timezone_get": ("checked the timezone", lambda a: ""),
+    "timezone_set": ("set the timezone to", lambda a: _code(a.get("timezone"))),
+    "session_search": ("searched past sessions for", lambda a: _quoted(a.get("query"))),
+    "memory_search": ("recalled memories for", lambda a: _quoted(a.get("query"))),
+    "memory_add": ("saved a memory", lambda a: _quoted(a.get("text"), 40)),
+    "memory_update": ("updated a memory", lambda a: _code(a.get("memory_id"))),
+    "memory_forget": ("forgot a memory", lambda a: _code(a.get("memory_id"))),
+    "sqlite_list": ("listed databases", lambda a: ""),
+    "sqlite_schema": ("inspected the schema of", lambda a: _code(a.get("name"))),
+    "sqlite_query": ("queried", lambda a: _code(a.get("name"))),
+    "sqlite_execute": ("wrote to", lambda a: _code(a.get("name"))),
+    "sqlite_register": ("registered", lambda a: _code(a.get("name"))),
+    "sqlite_unregister": ("unregistered", lambda a: _code(a.get("name"))),
+    "sqlite_backup": ("backed up", lambda a: _code(a.get("name"))),
+    "skills_list": ("listed skills", lambda a: ""),
+    "skill_view": ("loaded the skill", lambda a: _code(a.get("name"))),
+    "profile_list": ("listed profiles", lambda a: ""),
+    "profile_remove": ("removed the profile", lambda a: _code(a.get("profile_id"))),
+}
+
+
+def _describe_step(name: str, args: dict[str, Any], result: str, duration: float) -> str:
+    """One Markdown bullet: outcome, tool, action + arg hint, result note, duration."""
+    verb, hint_of = _STEP_DESCRIBERS.get(name, ("ran", lambda a: ""))
+    try:
+        hint = hint_of(args or {})
+    except Exception:
+        hint = ""
+    detail = f"{verb} {hint}".strip()
+    parts = [f"- {_outcome(result)} **{name}**"]
+    if detail:
+        parts.append(detail)
+    note = _result_note(result)
+    if note:
+        parts.append(note)
+    parts.append(_format_duration(duration))
+    return " · ".join(parts)
+
+
 def current_live_events() -> TurnEvents | None:
     return _bound.get()
 
@@ -357,7 +469,7 @@ class LiveTurnEvents:
         *,
         min_interval_s: float = 0.45,
         phrase_interval_s: float = 2.4,
-        max_len: int = 200,
+        max_len: int = 3500,
         phrases: Sequence[str] | None = None,
     ) -> None:
         self.sink = sink
@@ -374,12 +486,19 @@ class LiveTurnEvents:
         self._phrase_idx = 0
         self._lock = asyncio.Lock()
         self._closed = False
+        # Turn progress: elapsed time anchors the thinking line, finished tool
+        # steps accumulate beneath it.
+        self._t0 = time.monotonic()
+        self._phrase_text = ""
+        self._steps: list[str] = []
+        self._tool_stack: list[tuple[str, float, dict[str, Any]]] = []
 
     async def on_status(self, message: str) -> None:
         low = (message or "").strip().lower()
         if low.startswith("hitl_ask"):
             await self._leave_idle()
-            await self._emit(_pick(_APPROVAL_PHRASES))
+            self._phrase_text = _pick(_APPROVAL_PHRASES)
+            await self._emit(self._compose())
             return
         # Any other status keeps the warm, rotating thinking line going.
         await self._enter_idle()
@@ -389,14 +508,37 @@ class LiveTurnEvents:
         self._phrase_idx += 1
         return text
 
+    def _compose(self) -> str:
+        """Thinking line with elapsed time, then finished steps as Markdown bullets."""
+        elapsed = _format_duration(time.monotonic() - self._t0)
+        head = f"{self._phrase_text} ({elapsed})"
+        if not self._steps:
+            return head
+        shown = self._steps[-_MAX_STEPS:]
+        hidden = len(self._steps) - len(shown)
+        body = "\n".join(shown)
+        if hidden:
+            plural = "s" if hidden != 1 else ""
+            body = f"- … {hidden} earlier step{plural}\n{body}"
+        return f"{head}\n\n{body}"
+
     async def on_stream_delta(self, text: str) -> None:
         return None
 
     async def on_tool_start(self, name: str, args: dict[str, Any]) -> None:
-        # Never surface tool names/arguments — just keep a warm thinking line.
+        # Arguments steer the finished-step summary; raw result bodies stay hidden.
+        self._tool_stack.append((name, time.monotonic(), args))
         await self._enter_idle()
 
     async def on_tool_end(self, name: str, result: str) -> None:
+        duration = 0.0
+        args: dict[str, Any] = {}
+        for i in range(len(self._tool_stack) - 1, -1, -1):
+            if self._tool_stack[i][0] == name:
+                _, started, args = self._tool_stack.pop(i)
+                duration = time.monotonic() - started
+                break
+        self._steps.append(_describe_step(name, args, result, duration))
         await self._enter_idle()
 
     async def close(self) -> None:
@@ -420,9 +562,9 @@ class LiveTurnEvents:
     async def _enter_idle(self) -> None:
         if self._closed:
             return
-        phrase = self._phrase()
+        self._phrase_text = self._phrase()
         self._idle = True
-        await self._emit(phrase)
+        await self._emit(self._compose())
         if self._idle_task is None or self._idle_task.done():
             self._idle_task = asyncio.create_task(self._rotate_idle())
 
@@ -443,8 +585,8 @@ class LiveTurnEvents:
                 await asyncio.sleep(self.phrase_interval_s)
                 if self._closed or not self._idle:
                     return
-                phrase = self._phrase()
-                await self._emit(phrase)
+                self._phrase_text = self._phrase()
+                await self._emit(self._compose())
         except asyncio.CancelledError:
             return
 

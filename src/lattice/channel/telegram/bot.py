@@ -472,12 +472,20 @@ class TelegramBot:
                         if text == self._last:
                             return
                         self._last = text
-                        with contextlib.suppress(Exception):
+                        try:
                             await context.bot.edit_message_text(
                                 chat_id=chat_id,
                                 message_id=status.message_id,
-                                text=text,
+                                text=markdown_to_telegram_html(text),
+                                parse_mode="HTML",
                             )
+                        except Exception:
+                            with contextlib.suppress(Exception):
+                                await context.bot.edit_message_text(
+                                    chat_id=chat_id,
+                                    message_id=status.message_id,
+                                    text=text,
+                                )
 
                 stop_typing = asyncio.Event()
                 typing_task = asyncio.create_task(typing_keepalive(_typing, stop=stop_typing))
