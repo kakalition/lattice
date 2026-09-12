@@ -259,6 +259,16 @@ description: "Write/test scripts under scripts/ or skills/<name>/scripts/ via wr
 # Script authoring
 Use when creating local automation (CSV cleaners, renamers, batch transforms).
 
+## When this is the right rung
+Add a script when the skill's correctness is *logic*, not prose: parsing/normalizing
+input, validation, aggregation, CSV import/dedupe, or invariants across tables. If the
+skill already works with plain `sqlite_*` / `shell`, you do not need a script.
+- A script needs **no tool manifest** — run it with
+  `execute_script(path="skills/<skill>/scripts/<name>.py", args=[...])`. Path handlers
+  run by path, so `__file__` and sibling imports work.
+- Only wrap it in `tools/<name>.yaml` if it must be callable by name every turn without
+  loading the skill (see **tool-authoring**) — and then expose **one** tool per domain.
+
 ## Paths
 - Shared: `scripts/<name>.py|.js|.sh` (Lattice home).
 - Skill-owned: `skills/<skill>/scripts/<name>.<ext>` — ships with the skill and is
@@ -357,6 +367,27 @@ description: "Create or edit Lattice skills under skills/<name>/SKILL.md via wri
 # Skill authoring
 Use when the user asks to create, update, or refine a Lattice skill from any channel (CLI, Telegram, …).
 
+## Choose the lightest form (do this first)
+Stop at the lowest rung that can be *correct* — do not stack all three because more
+pieces look thorough.
+1. **Skill only (default).** Document the schema, rules, and example calls; drive
+   existing tools (`sqlite_query`/`sqlite_execute`, `shell`, `execute_script`,
+   `write_file`). No script, no manifest. Fine for simple reads or single-row writes
+   the model can write correctly each time.
+2. **Add a script** when correctness lives in logic, not prose: parsing/normalizing
+   input, validation, aggregation, CSV import/dedupe, or invariants across tables.
+   Put it in `skills/<name>/scripts/` and run it with
+   `execute_script(path="skills/<name>/scripts/x.py", args=[...])`. No manifest
+   needed. See **script-authoring**.
+3. **Add at most one tool manifest** only if the action is frequent enough that the
+   model shouldn't reload the skill or remember argv, or you want typed args. **One
+   dispatcher per domain** (e.g. `finance(action=…)`), never one tool per action;
+   optional extras go under `tools.cold`. See **tool-authoring**.
+
+Escalate only when the rung below can't be correct. Example (bookkeeping):
+`skills/bookkeeping/SKILL.md` + `scripts/ledger.py` via `execute_script` — *not*
+seven `tools/*.yaml` wrappers and not raw `sqlite_execute` for money math.
+
 ## Paths (required)
 - New/edit path: `skills/<kebab-name>/SKILL.md` (resolved under Lattice home, not the workspace jail).
 - Example: `skills/meal-prep/SKILL.md`
@@ -395,17 +426,30 @@ Keep it short. Prefer progressive disclosure: index shows description; body load
 ## Don't
 - Write under the workspace copy unless the user insists; home `skills/` is canonical.
 - Invent tools Lattice does not have (e.g. `skill_manage`) — check `skills_list` / core tool names.
+- Ship a `SKILL.md` + a CLI script + N tool wrappers for one domain. One domain =
+  one skill, logic in one script, at most one tool.
 - Put secrets in skills.
 """,
     ),
     "tool-authoring": (
-        "Define a declarative script-backed tool under tools/<name>.yaml (no restart).",
+        "Define a declarative tool under tools/<name>.yaml — only when a skill+script isn't enough (one tool per domain).",
         """---
 name: tool-authoring
-description: "Define a declarative script-backed tool under tools/<name>.yaml (no restart)."
+description: "Define a declarative tool under tools/<name>.yaml — only when a skill+script isn't enough (one tool per domain)."
 ---
 # Tool authoring
 Use when the user wants a reusable capability callable as a first-class tool.
+
+## Last-resort rung
+Only define a manifest when a **skill + script is not enough** — i.e. the action is
+frequent enough that the model shouldn't have to load the skill or remember argv, or
+you need typed/discoverable arguments. In order: skill only → skill + script (no
+manifest) → **one** manifest here.
+- **One tool per domain, not per action.** A ledger gets one `finance(action=…)`
+  dispatcher, not `expense`/`income`/`finance_summary`/… The handler maps `action` to
+  the script's argv.
+- If you do add several, put the rarely used ones under `tools.cold` so they're deferred
+  out of the first request.
 
 ## Where
 `tools/<name>.yaml` (Lattice home, resolved by `write_file`). Name must match
@@ -463,6 +507,7 @@ timeout_seconds: 60         # optional; clamped by scripts.max_timeout_seconds
 
 ## Don't
 - Duplicate a core tool name; use `tools.deny` / `tools.cold` to hide or defer.
+- Create one manifest per subcommand of a script — expose one dispatcher tool.
 - Put secrets in manifests or handlers.
 - Expect same-turn visibility or a process restart — wait for the next turn.
 """,
