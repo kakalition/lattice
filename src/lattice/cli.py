@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
 from lattice import __version__
-from lattice.backup import create_backup, default_backup_path, restore_backup
+from lattice.backup import create_backup, default_backup_path, gateway_running, restore_backup
 from lattice.branding import brand_label
 from lattice.config import load_settings
 from lattice.hitl import AutoApproveHitl, CliHitlAdapter
@@ -71,10 +72,38 @@ def init_cmd(
     home: Path | None = typer.Option(
         None, help="Override Lattice home (default <project>/.lattice)"
     ),
+    reset: bool = typer.Option(
+        False,
+        "--reset",
+        help="Archive the current home (if non-empty), wipe it, then re-initialize.",
+    ),
 ) -> None:
-    """Create <project>/.lattice layout, default profile, and skill starters."""
+    """Create <project>/.lattice layout, default profile, and skill starters.
+
+    ``--reset`` starts fresh: the existing home is archived to
+    ``<home-name>-<utc>.tar.gz`` in the current directory, then removed and
+    re-initialized. Secrets live in the project ``.env`` and are untouched.
+    """
+    root = (home or lattice_home()).resolve()
+    archived: Path | None = None
+    if reset:
+        running = gateway_running(root)
+        if running is not None:
+            console.print(f"[red]gateway is running (pid {running}); stop it before --reset[/]")
+            raise typer.Exit(1)
+        if root.is_dir() and any(root.iterdir()):
+            out = default_backup_path(root)
+            try:
+                result = create_backup(root, output=out)
+            except FileExistsError as exc:
+                console.print(f"[red]{exc}[/]")
+                raise typer.Exit(1) from exc
+            archived = result.archive
+        shutil.rmtree(root, ignore_errors=True)
     root = init_home(home)
     setup_logging()
+    if archived is not None:
+        console.print(f"[yellow]archived[/] previous home → {archived}")
     console.print(f"initialized {root}")
 
 

@@ -64,3 +64,42 @@ def test_memory_self_check_passes_notes_through(monkeypatch) -> None:
 
 def _raise_runtime(*a, **k):
     raise RuntimeError("memory self-check FAILED: search did not return the probe")
+
+
+def test_init_reset_archives_and_reinitializes(tmp_path: Path, monkeypatch) -> None:
+    from typer.testing import CliRunner
+
+    from lattice.cli import app
+
+    runner = CliRunner()
+    home = tmp_path / "freshhome"
+    first = runner.invoke(app, ["init", "--home", str(home)])
+    assert first.exit_code == 0, first.output
+
+    marker = home / "workspace" / "keep.txt"
+    marker.write_text("old", encoding="utf-8")
+    (home / "state.db").write_text("db", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["init", "--reset", "--home", str(home)])
+    assert result.exit_code == 0, result.output
+    archives = list(tmp_path.glob("freshhome-*.tar.gz"))
+    assert archives, result.output
+    assert not marker.exists(), "old home content survived --reset"
+    assert (home / "lattice.yaml").is_file(), "home was not re-initialized"
+
+
+def test_init_reset_refuses_running_gateway(tmp_path: Path) -> None:
+    import os
+
+    from typer.testing import CliRunner
+
+    from lattice.cli import app
+
+    home = tmp_path / "gwhome"
+    home.mkdir(parents=True)
+    (home / "gateway.pid").write_text(str(os.getpid()), encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["init", "--reset", "--home", str(home)])
+    assert result.exit_code == 1
+    assert "gateway is running" in result.output

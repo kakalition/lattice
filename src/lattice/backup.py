@@ -86,16 +86,23 @@ def _iter_home_files(home: Path, *, include_logs: bool) -> Iterable[Path]:
 
 
 def _consistent_sqlite_copy(src: Path, dest: Path) -> None:
-    """Online backup so WAL state is consistent inside the archive."""
+    """Online backup so WAL state is consistent inside the archive.
+
+    Falls back to a plain copy when ``src`` is not a usable SQLite database
+    (corrupt or placeholder), so backup/reset can still complete.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with (
-        sqlite3.connect(f"file:{src}?mode=ro", uri=True) as src_conn,
-        sqlite3.connect(dest) as dst_conn,
-    ):
-        src_conn.backup(dst_conn)
+    try:
+        with (
+            sqlite3.connect(f"file:{src}?mode=ro", uri=True) as src_conn,
+            sqlite3.connect(dest) as dst_conn,
+        ):
+            src_conn.backup(dst_conn)
+    except sqlite3.Error:
+        shutil.copy2(src, dest)
 
 
-def _gateway_running(home: Path) -> int | None:
+def gateway_running(home: Path) -> int | None:
     pid_path = home / "gateway.pid"
     if not pid_path.is_file():
         return None
@@ -220,11 +227,9 @@ def restore_backup(
     read_manifest(archive)
     root = (home or lattice_home()).resolve()
 
-    running = _gateway_running(root)
+    running = gateway_running(root)
     if running is not None and not force:
-        raise RuntimeError(
-            f"gateway appears running (pid {running}); stop it or pass --force"
-        )
+        raise RuntimeError(f"gateway appears running (pid {running}); stop it or pass --force")
 
     displaced: Path | None = None
     if _home_nonempty(root):
