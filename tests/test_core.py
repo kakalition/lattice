@@ -334,6 +334,28 @@ def test_ensure_default_profile(tmp_path: Path) -> None:
     assert p.soul
 
 
+def test_soul_read_write_reset(tmp_path: Path) -> None:
+    from lattice.profiles import read_soul, reset_soul, soul_path, write_soul
+    from lattice.profiles.load import DEFAULT_SOUL
+
+    ensure_default_profile(tmp_path)
+    write_soul("default", "You are Test.", home=tmp_path)
+    assert read_soul("default", tmp_path).strip() == "You are Test."
+    assert soul_path("default", tmp_path).is_file()
+    # A soul edit is live on the next load (no restart / no cache).
+    assert load_profile("default", tmp_path).soul.strip() == "You are Test."
+
+    reset_soul("default", tmp_path)
+    assert read_soul("default", tmp_path).strip() == DEFAULT_SOUL.strip()
+
+    with pytest.raises(ValueError):
+        write_soul("default", "   ", home=tmp_path)
+    with pytest.raises(ValueError):
+        write_soul("../etc", "x", home=tmp_path)
+    with pytest.raises(FileNotFoundError):
+        write_soul("missing", "x", home=tmp_path)
+
+
 def test_seed_skill_scripts_non_clobber(tmp_path: Path) -> None:
     from lattice.setup import seed_skill_scripts
 

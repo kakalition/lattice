@@ -507,8 +507,15 @@ Run through `execute_script` with `language="python"`:
   Destructive: **HITL-gated**; cannot remove `default`.
 
 ## SOUL.md / USER.md
-- **SOUL.md**: identity + behavior (system). Concise.
+- **SOUL.md**: identity + behavior (system prompt). Concise; write in the assistant's voice.
 - **USER.md**: durable user notes for that persona (optional).
+- Editing `profiles/<id>/SOUL.md` takes effect on the **next turn** — no restart.
+
+## Changing the soul from a channel
+- Telegram has a direct command: `/soul` (show), `/soul set <text>` (replace),
+  `/soul reset` (restore the built-in default). Applies to the active profile.
+- Or just ask in chat: the agent writes `profiles/<id>/SOUL.md` with
+  `write_file` / `edit_file`. Changes are live on the next message.
 
 ## Channel flow
 1. `clarify` id, purpose, tool strictness, which skills to prefer.
@@ -518,7 +525,8 @@ Run through `execute_script` with `language="python"`:
 5. On Telegram: short confirmation + what changed; no raw YAML dump unless asked.
 
 ## Don't
-- Overwrite `default` SOUL without explicit confirmation.
+- Overwrite `default` SOUL without explicit confirmation (the user asking to
+  change it *is* confirmation).
 - Remove `default`.
 - Put API keys in profile files (use `.env`).
 - Point `sqlite.allow` at Lattice `state.db`.

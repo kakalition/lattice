@@ -12,4 +12,5 @@ COMMANDS = [
     ("model", "Show or set primary model"),
     ("tools", "List enabled tool policy"),
     ("profile", "Switch or remove profile"),
+    ("soul", "Show, set, or reset the profile soul"),
 ]

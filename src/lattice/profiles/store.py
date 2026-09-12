@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 from lattice.paths import lattice_home
-from lattice.profiles.load import Profile, ensure_default_profile, load_profile
+from lattice.profiles.load import DEFAULT_SOUL, Profile, ensure_default_profile, load_profile
 from lattice.session import SessionStore
 
 _PROFILE_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
@@ -61,3 +61,34 @@ async def resolve_sticky_profile(
 def get_profile(profile_id: str, home: Path | None = None) -> Profile:
     ensure_default_profile(home)
     return load_profile(profile_id, home)
+
+
+def soul_path(profile_id: str, home: Path | None = None) -> Path:
+    """Path to ``profiles/<id>/SOUL.md`` for a validated profile id."""
+    pid = validate_profile_id(profile_id)
+    return (home or lattice_home()) / "profiles" / pid / "SOUL.md"
+
+
+def read_soul(profile_id: str, home: Path | None = None) -> str:
+    path = soul_path(profile_id, home)
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+def write_soul(profile_id: str, text: str, home: Path | None = None) -> Path:
+    """Replace a profile's SOUL.md. Takes effect on the next turn (no restart)."""
+    pid = validate_profile_id(profile_id)
+    body = (text or "").strip()
+    if not body:
+        raise ValueError("soul text is required")
+    if pid == "default":
+        ensure_default_profile(home)
+    root = (home or lattice_home()) / "profiles" / pid
+    if not (root / "profile.yaml").is_file():
+        raise FileNotFoundError(f"profile not found: {pid}")
+    path = root / "SOUL.md"
+    path.write_text(body + "\n", encoding="utf-8")
+    return path
+
+
+def reset_soul(profile_id: str, home: Path | None = None) -> Path:
+    return write_soul(profile_id, DEFAULT_SOUL, home=home)

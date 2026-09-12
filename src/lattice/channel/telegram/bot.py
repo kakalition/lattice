@@ -120,9 +120,7 @@ class TelegramBot:
                             "parse_mode": None,
                         }
                         try:
-                            await context.bot.edit_message_text(
-                                message_id=edit_message_id, **plain
-                            )
+                            await context.bot.edit_message_text(message_id=edit_message_id, **plain)
                             continue
                         except Exception:
                             pass
@@ -263,6 +261,54 @@ class TelegramBot:
                 "Use the memory_forget tool in chat, or pass an id: /forget <id> (wired via turn)."
             )
 
+        async def on_soul(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            from lattice.profiles import read_soul, reset_soul, write_soul
+
+            if not update.message or not update.effective_user:
+                return
+            uid = str(update.effective_user.id)
+            pid = await self.store.get_sticky_profile("telegram", uid) or "default"
+            raw = (update.message.text or "").strip()
+            # Keep the raw remainder (newlines included); context.args collapses them.
+            split = raw.split(maxsplit=1)
+            rest = split[1].strip() if len(split) > 1 else ""
+            low = rest.lower()
+
+            if not rest or low in {"show", "view", "get"}:
+                soul = read_soul(pid, self.settings.home).strip()
+                body = soul or "(empty — Lattice falls back to a minimal identity)"
+                if len(body) > 3500:
+                    body = body[:3500] + "…"
+                await update.message.reply_text(f"soul for profile {pid}:\n\n{body}")
+                return
+
+            if low in {"reset", "default"}:
+                reset_soul(pid, self.settings.home)
+                await update.message.reply_text(
+                    f"soul reset to the built-in default for profile {pid}."
+                )
+                return
+
+            for prefix in ("set ", "edit "):
+                if low.startswith(prefix):
+                    content = rest[len(prefix) :].lstrip("\n ").strip()
+                    try:
+                        write_soul(pid, content, self.settings.home)
+                    except (FileNotFoundError, ValueError) as exc:
+                        await update.message.reply_text(str(exc))
+                        return
+                    await update.message.reply_text(
+                        f"soul updated for profile {pid} — active on your next message."
+                    )
+                    return
+
+            await update.message.reply_text(
+                "usage:\n"
+                "/soul — show current soul\n"
+                "/soul set <text> — replace it\n"
+                "/soul reset — restore the built-in default"
+            )
+
         async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             query = update.callback_query
             if not query or not query.data:
@@ -387,9 +433,7 @@ class TelegramBot:
                 # buries the final reply above the approvals — send a new message instead.
                 hitl_after_status = [False]
                 self.hitl.set_active_user(str(uid))
-                self.hitl.bind_send(
-                    await _send_for_hitl(context, chat_id, mark=hitl_after_status)
-                )
+                self.hitl.bind_send(await _send_for_hitl(context, chat_id, mark=hitl_after_status))
                 logger.info(
                     "recv user=%s profile=%s text=%s",
                     uid,
@@ -413,9 +457,7 @@ class TelegramBot:
                             )
 
                 stop_typing = asyncio.Event()
-                typing_task = asyncio.create_task(
-                    typing_keepalive(_typing, stop=stop_typing)
-                )
+                typing_task = asyncio.create_task(typing_keepalive(_typing, stop=stop_typing))
                 live = LiveTurnEvents(_TelegramStatusSink())
                 try:
                     async with bind_live_events(live):
@@ -461,13 +503,9 @@ class TelegramBot:
                         suf = Path(mp).suffix.lower()
                         try:
                             if suf in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-                                await context.bot.send_photo(
-                                    chat_id=chat_id, photo=str(mp)
-                                )
+                                await context.bot.send_photo(chat_id=chat_id, photo=str(mp))
                             else:
-                                await context.bot.send_document(
-                                    chat_id=chat_id, document=str(mp)
-                                )
+                                await context.bot.send_document(chat_id=chat_id, document=str(mp))
                         except Exception:
                             logger.exception("failed sending media %s", mp)
 
@@ -488,6 +526,7 @@ class TelegramBot:
         app.add_handler(CommandHandler("sessions", on_sessions))
         app.add_handler(CommandHandler("resume", on_resume))
         app.add_handler(CommandHandler("profile", on_profile))
+        app.add_handler(CommandHandler("soul", on_soul))
         app.add_handler(CommandHandler("model", on_model))
         app.add_handler(CommandHandler("tools", on_tools))
         app.add_handler(CommandHandler("forget", on_forget))
