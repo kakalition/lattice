@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ import threading
 import uuid
 import warnings
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,37 @@ _EMBED_DIMS = 384
 _client_lock = threading.Lock()
 _clients: dict[str, Any] = {}
 _instances: dict[tuple[str, str], Any] = {}
+_clients_closed = False
+
+
+def close_memory() -> None:
+    """Release embedded Qdrant clients while the interpreter is still usable.
+
+    ``QdrantClient.__del__`` calls ``close()``, which lazily imports
+    ``portalocker`` and closes per-collection storage. If that runs during
+    interpreter finalisation it raises ``ImportError: sys.meta_path is None``
+    and libc++ aborts the process (``recursive_mutex lock failed``).
+
+    Closing explicitly at exit avoids that, and also releases the on-disk lock
+    so a following process can open the same store. Safe to call more than once.
+    """
+    global _clients_closed
+    with _client_lock:
+        if _clients_closed:
+            return
+        _clients_closed = True
+        instances = list(_instances.values())
+        clients = list(_clients.values())
+        _instances.clear()
+        _clients.clear()
+    # Tear mem0 down first so it stops holding the vector store, then close the
+    # shared clients. Best-effort: shutdown must never raise.
+    for instance in instances:
+        with suppress(Exception):
+            instance.close()
+    for client in clients:
+        with suppress(Exception):
+            client.close()
 
 
 def _silence_mem0_deps() -> None:
@@ -89,6 +121,9 @@ def _shared_qdrant_client(path: Path) -> Any:
             created.close()
             return existing
         _clients[key] = created
+        # A client created after a shutdown pass must be closed at exit too.
+        global _clients_closed
+        _clients_closed = False
         return created
 
 
@@ -253,6 +288,14 @@ class Mem0QdrantMemory:
         blob = json.dumps(messages[-6:], ensure_ascii=False)[:4000]
         await self.add(blob, metadata={"source": "sync_turn"})
 
+    def close(self) -> None:
+        """Best-effort teardown of the mem0 instance (vector store client is shared).
+
+        The underlying Qdrant client is owned by ``_shared_qdrant_client`` and is
+        released in ``close_memory``, so this only drops our reference to mem0.
+        """
+        self._memory = None
+
 
 # Back-compat alias during the Chroma → Qdrant switch.
 Mem0ChromaMemory = Mem0QdrantMemory
@@ -273,3 +316,8 @@ def build_memory(*, collection: str, path: Path | None = None) -> Mem0QdrantMemo
             return existing
         _instances[key] = inst
         return inst
+
+
+# Explicit teardown at exit; without it QdrantClient.__del__ closes during
+# interpreter finalisation and aborts the process. Registered once at import.
+atexit.register(close_memory)
