@@ -65,6 +65,8 @@ def compute_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
     tool_calls = 0
     failing: dict[str, int] = {}
     expensive: dict[str, int] = {}
+    phase_totals: dict[str, int] = {}
+    phase_values: dict[str, list[int]] = {}
 
     for record in records:
         outcome = str(record.get("outcome") or "unknown")
@@ -73,6 +75,10 @@ def compute_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         ttft = record.get("ttft_ms")
         if ttft is not None:
             ttfts.append(int(ttft))
+        for name, value in (record.get("phases") or {}).items():
+            ms = int(value or 0)
+            phase_totals[name] = phase_totals.get(name, 0) + ms
+            phase_values.setdefault(name, []).append(ms)
         usage = record.get("usage") or {}
         requests += int(usage.get("requests") or 0)
         input_tokens += int(usage.get("input_tokens") or 0)
@@ -105,6 +111,14 @@ def compute_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         "retries": retries,
         "turns_with_retries": turns_with_retries,
         "compressions": compressions,
+        "phases": {
+            name: {
+                "total_ms": phase_totals.get(name, 0),
+                "p50": _percentile(phase_values.get(name, []), 0.5),
+                "p95": _percentile(phase_values.get(name, []), 0.95),
+            }
+            for name in sorted(phase_values)
+        },
         "top_failing_tools": sorted(failing.items(), key=lambda kv: (-kv[1], kv[0]))[:5],
         "top_expensive_tools": sorted(expensive.items(), key=lambda kv: (-kv[1], kv[0]))[:5],
     }

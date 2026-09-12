@@ -421,6 +421,32 @@ def test_soul_name_helpers(tmp_path: Path) -> None:
         write_soul_name("default", "  ", home=tmp_path)
 
 
+def test_system_soul_is_memoized() -> None:
+    from lattice.profiles.load import system_soul
+
+    assert system_soul() is system_soul()
+
+
+def test_get_profile_caches_and_invalidates_on_write(tmp_path: Path) -> None:
+    from lattice.profiles import get_profile, write_soul
+
+    ensure_default_profile(tmp_path)
+    first = get_profile("default", tmp_path)
+    assert get_profile("default", tmp_path) is first
+
+    write_soul("default", "name: Cached\n\n# Persona", home=tmp_path)
+    second = get_profile("default", tmp_path)
+    assert second is not first
+    assert second.persona_name == "Cached"
+
+    # An uncontrolled edit still invalidates via the mtime key.
+    user_path = tmp_path / "profiles" / "default" / "USER.md"
+    user_path.write_text("durable notes\n", encoding="utf-8")
+    third = get_profile("default", tmp_path)
+    assert third is not second
+    assert "durable notes" in third.user_notes
+
+
 def test_prompt_bundle_has_system_base_and_persona(tmp_path: Path) -> None:
     from lattice.agent_app import build_prompt_bundle
     from lattice.profiles import read_soul_name, write_soul

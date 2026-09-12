@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import time
 from datetime import datetime
@@ -64,6 +65,8 @@ from lattice.tools.deadline import with_deadline
 from lattice.tools.user_tools import scan_user_tools
 from lattice.turn_record import ContextRecord, TurnOutcome
 from lattice.turn_trace import LoggingTurnEvents, new_turn_id
+
+logger = logging.getLogger("lattice.turn")
 
 
 class TurnCancelled(Exception):
@@ -177,11 +180,27 @@ async def run_turn(
     settings = settings or load_settings()
     turn_id = new_turn_id()
     inner = events or current_live_events() or NullTurnEvents()
+
+    # Media snapshot is deferred until the first media-capable tool actually
+    # starts. Pure-text turns never pay the recursive workspace walk, and the
+    # snapshot still captures pre-existing media before anything can write.
+    media_before: set[Path] = set()
+    media_capable = False
+    media_snapshot_taken = False
+
+    async def _on_tool_start(name: str) -> None:
+        nonlocal media_snapshot_taken
+        if media_snapshot_taken or not media_capable or name not in _MEDIA_TOOLS:
+            return
+        media_snapshot_taken = True
+        media_before.update(await asyncio.to_thread(snapshot_media, workspace))
+
     trace = LoggingTurnEvents(
         turn_id,
         inner=inner,
         home=settings.home,
         record_enabled=settings.observability.turn_record,
+        on_tool_start_hook=_on_tool_start,
     )
     events = trace
     hitl = hitl or AutoApproveHitl(approve_all=False)
@@ -227,13 +246,28 @@ async def run_turn(
 
     notices: list[str] = []
     memory = memory or build_memory_for_profile(settings, profile, model_id=primary_id)
-    # Overlap independent pre-model work: skill/tool discovery are disk scans, so
-    # run them off the loop alongside the memory embedding instead of serially.
+
+    async def _recall() -> list[dict[str, Any]]:
+        timeout = float(settings.memory.search_timeout_seconds or 0.0)
+        if timeout <= 0:
+            return await memory.search(inbound.text, limit=5)
+        try:
+            return await asyncio.wait_for(memory.search(inbound.text, limit=5), timeout=timeout)
+        except TimeoutError:
+            logger.warning("memory search exceeded %.1fs; continuing without memories", timeout)
+            return []
+
+    registry = SqliteRegistry(settings, workspace=workspace)
+    pool = SqlitePool(registry)
+    # Overlap independent pre-model work: skill/tool discovery are disk scans,
+    # workspace introspection is a directory listing + DB schema read, and memory
+    # is an embedding round-trip. Run them off the loop instead of serially.
     with trace.timed("prefetch"):
-        skill_report, user_tools, prefetch = await asyncio.gather(
+        skill_report, user_tools, prefetch, workspace_context = await asyncio.gather(
             asyncio.to_thread(scan_skills_for, settings.home, profile),
             asyncio.to_thread(scan_user_tools, settings.home),
-            memory.search(inbound.text, limit=5),
+            _recall(),
+            build_workspace_context(workspace, registry, pool, allow=profile.sqlite_allow),
         )
     skills = skill_report.skills
     for err in skill_report.errors:
@@ -309,8 +343,6 @@ async def run_turn(
             )
             messages = result.messages
 
-    registry = SqliteRegistry(settings, workspace=workspace)
-    pool = SqlitePool(registry)
     tz_name = resolve_timezone(settings.home, explicit=settings.timezone)
     try:
         now = datetime.now(ZoneInfo(tz_name)).isoformat(timespec="minutes")
@@ -332,10 +364,8 @@ async def run_turn(
         evidence_notice = build_evidence_notice(existing.get("actions") if existing else None)
         if evidence_notice:
             notices.append(evidence_notice)
-    # Cheap discovery facts so the model skips its own ls/find/schema warm-up.
-    workspace_context = await build_workspace_context(
-        workspace, registry, pool, allow=profile.sqlite_allow
-    )
+    # Cheap discovery facts so the model skips its own ls/find/schema warm-up;
+    # built concurrently with the other prefetch work above.
     if workspace_context:
         notices.append(workspace_context)
     prompt = build_prompt_bundle(profile, entries, notices, runtime_context=runtime_context)
@@ -458,7 +488,6 @@ async def run_turn(
 
     usage_payload = _usage_payload()
     media_capable = bool(_MEDIA_TOOLS.intersection(enabled))
-    media_before = snapshot_media(workspace) if media_capable else set()
     turn_start = time.time()
 
     def _rebuild_history() -> None:

@@ -197,6 +197,12 @@ def chat(
     ensure_oneshot_setup(settings.home, console=console)
     _boot_memory_self_check(settings, profile)
 
+    # One store for the whole session: the adapter and run_turn must not open a
+    # separate connection (and re-run schema DDL) per turn.
+    from lattice.session import SessionStore
+
+    store = SessionStore(settings.home / "state.db")
+
     async def handler(inbound):
         inbound.profile_id = inbound.profile_id or profile
         if echo or not resolve_api_key(settings):
@@ -205,7 +211,11 @@ def chat(
             return await echo_turn(inbound)
         hitl = CliHitlAdapter(timeout_seconds=settings.agent.hitl_timeout_seconds)
         return await run_turn(
-            inbound, settings=settings, hitl=hitl, cancel_event=inbound.cancel_event
+            inbound,
+            settings=settings,
+            hitl=hitl,
+            session_store=store,
+            cancel_event=inbound.cancel_event,
         )
 
     if tui:
@@ -219,7 +229,7 @@ def chat(
 
     from lattice.channel.cli.adapter import CliAdapter
 
-    adapter = CliAdapter(profile_id=profile)
+    adapter = CliAdapter(profile_id=profile, store=store)
     try:
         _run(adapter.run(handler))
     finally:
@@ -320,6 +330,8 @@ def stats(
         f"duration_ms p50={duration['p50']} p95={duration['p95']}  "
         f"ttft_ms p50={ttft['p50']} p95={ttft['p95']}"
     )
+    for name, phase in data.get("phases", {}).items():
+        console.print(f"{name}_ms p50={phase['p50']} p95={phase['p95']} total={phase['total_ms']}")
     console.print(
         f"requests={data['requests']} tool_calls={data['tool_calls']} "
         f"cache_hit_ratio={data['cache_hit_ratio']:.3f} "

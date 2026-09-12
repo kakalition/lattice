@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 from pathlib import Path
 
 from lattice.paths import lattice_home
@@ -19,6 +20,36 @@ from lattice.profiles.load import (
 from lattice.session import SessionStore
 
 _PROFILE_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+
+# Profiles change only when one of their three files changes; cache by
+# (home, profile_id) and treat the files' mtimes as the cache key. This is
+# freshness-preserving (a changed file changes its mtime), not TTL staleness.
+_PROFILE_GUARD = threading.Lock()
+_profile_cache: dict[tuple[Path, str], tuple[tuple[int | None, ...], Profile]] = {}
+
+
+def _profile_files(home: Path, profile_id: str) -> tuple[Path, Path, Path]:
+    root = home / "profiles" / profile_id
+    return root / "profile.yaml", root / "SOUL.md", root / "USER.md"
+
+
+def _profile_mtimes(home: Path, profile_id: str) -> tuple[int | None, ...]:
+    out: list[int | None] = []
+    for path in _profile_files(home, profile_id):
+        try:
+            out.append(path.stat().st_mtime_ns)
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def _clear_profile_cache(profile_id: str, home: Path | None = None) -> None:
+    with _PROFILE_GUARD:
+        if home is None:
+            for key in [k for k in _profile_cache if k[1] == profile_id]:
+                _profile_cache.pop(key, None)
+        else:
+            _profile_cache.pop((home.resolve(), profile_id), None)
 
 
 def validate_profile_id(profile_id: str) -> str:
@@ -67,8 +98,9 @@ def validate_removable_profile(profile_id: str, home: Path | None = None) -> str
 
 def remove_profile(profile_id: str, home: Path | None = None) -> Path:
     """Delete profiles/<id>/ under lattice home. Refuses `default` and unknown ids."""
-    _, target = _profile_removal_target(profile_id, home)
+    pid, target = _profile_removal_target(profile_id, home)
     shutil.rmtree(target)
+    _clear_profile_cache(pid, home)
     return target
 
 
@@ -84,8 +116,18 @@ async def resolve_sticky_profile(
 
 
 def get_profile(profile_id: str, home: Path | None = None) -> Profile:
-    ensure_default_profile(home)
-    return load_profile(profile_id, home)
+    root = (home or lattice_home()).resolve()
+    ensure_default_profile(root)
+    key = (root, profile_id)
+    mtimes = _profile_mtimes(root, profile_id)
+    with _PROFILE_GUARD:
+        cached = _profile_cache.get(key)
+        if cached is not None and cached[0] == mtimes:
+            return cached[1]
+    profile = load_profile(profile_id, root)
+    with _PROFILE_GUARD:
+        _profile_cache[key] = (mtimes, profile)
+    return profile
 
 
 def soul_path(profile_id: str, home: Path | None = None) -> Path:
@@ -108,6 +150,7 @@ def _write_profile_file(
         raise FileNotFoundError(f"profile not found: {pid}")
     path = root / filename
     path.write_text(body + "\n", encoding="utf-8")
+    _clear_profile_cache(pid, home)
     return path
 
 

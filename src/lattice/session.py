@@ -21,6 +21,30 @@ _LOCK = asyncio.Lock()
 _LOCKS_GUARD = threading.Lock()
 _session_locks: dict[str, asyncio.Lock] = {}
 
+# Schema DDL is identical per database file, so run it once per process. The
+# fingerprint is (st_dev, st_ino): if the file is deleted and recreated at the
+# same path (eval run homes do this) the inode changes and the DDL re-runs.
+_SCHEMA_GUARD = threading.Lock()
+_schema_ready: dict[Path, tuple[int, int]] = {}
+
+
+def _schema_fingerprint(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _schema_is_ready(key: Path, fingerprint: tuple[int, int]) -> bool:
+    with _SCHEMA_GUARD:
+        return _schema_ready.get(key) == fingerprint
+
+
+def _mark_schema_ready(key: Path, fingerprint: tuple[int, int]) -> None:
+    with _SCHEMA_GUARD:
+        _schema_ready[key] = fingerprint
+
 
 def _evict_model_cache() -> None:
     """Drop shared provider clients when the effective model id changes."""
@@ -55,7 +79,12 @@ class SessionStore:
     async def connect(self) -> aiosqlite.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(self.db_path)
+        # Per-connection tuning is cheap and always required.
         await apply_perf_pragmas(conn)
+        key = self.db_path.resolve()
+        fingerprint = _schema_fingerprint(self.db_path)
+        if fingerprint is not None and _schema_is_ready(key, fingerprint):
+            return conn
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -102,6 +131,11 @@ class SessionStore:
             """
         )
         await conn.commit()
+        # Re-read the fingerprint: the DDL commit may have checkpointed WAL and
+        # touched the file, but device/inode are stable.
+        settled = _schema_fingerprint(self.db_path) or fingerprint
+        if settled is not None:
+            _mark_schema_ready(key, settled)
         return conn
 
     async def create(

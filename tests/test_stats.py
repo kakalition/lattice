@@ -34,6 +34,7 @@ def _fixture() -> list[dict]:
         _record(
             duration_ms=100,
             ttft_ms=10,
+            phases={"prefetch": 10, "executor": 100},
             usage={"requests": 1, "input_tokens": 1000, "cache_read_tokens": 900},
             tools=[
                 {"name": "shell", "duration_ms": 5, "ok": True, "result_bytes": 1},
@@ -45,6 +46,7 @@ def _fixture() -> list[dict]:
             ttft_ms=20,
             outcome="error",
             retry_count=1,
+            phases={"prefetch": 20, "executor": 200, "compress": 5},
             context={"compressed": True},
             usage={"requests": 2, "input_tokens": 2000, "cache_read_tokens": 1000},
             tools=[
@@ -74,6 +76,9 @@ def test_compute_stats_aggregates() -> None:
     assert data["retries"] == 1
     assert data["turns_with_retries"] == 1
     assert data["compressions"] == 1
+    assert data["phases"]["prefetch"] == {"total_ms": 30, "p50": 10, "p95": 20}
+    assert data["phases"]["executor"] == {"total_ms": 300, "p50": 100, "p95": 200}
+    assert data["phases"]["compress"] == {"total_ms": 5, "p50": 5, "p95": 5}
     assert dict(data["top_failing_tools"]) == {"shell": 1, "calculator": 1}
     assert data["top_expensive_tools"][0] == ("shell", 19)
 
@@ -82,6 +87,7 @@ def test_compute_stats_empty() -> None:
     data = compute_stats([])
     assert data["turns"] == 0
     assert data["duration_ms"] == {"p50": None, "p95": None}
+    assert data["phases"] == {}
     assert data["cache_hit_ratio"] == 0.0
 
 

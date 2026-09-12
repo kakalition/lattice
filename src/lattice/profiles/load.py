@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import functools
 import re
 from pathlib import Path
 from typing import Any
@@ -49,8 +50,13 @@ You are a personal assistant with tools, memory, and skills.
 _SYSTEM_SOUL_PATH = Path(__file__).resolve().parents[1] / "assets" / "SOUL.md"
 
 
+@functools.lru_cache(maxsize=1)
 def system_soul() -> str:
-    """Built-in operating base (``assets/SOUL.md``), with an embedded fallback."""
+    """Built-in operating base (``assets/SOUL.md``), with an embedded fallback.
+
+    The file ships with the package and is not user-editable, so the result is
+    memoized for the process lifetime (re-read once per turn otherwise).
+    """
     try:
         text = _SYSTEM_SOUL_PATH.read_text(encoding="utf-8").strip()
         if text:

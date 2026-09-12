@@ -10,8 +10,8 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,11 +68,13 @@ class LoggingTurnEvents:
         inner: TurnEvents | None = None,
         home: Path | None = None,
         record_enabled: bool = True,
+        on_tool_start_hook: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.turn_id = turn_id
         self.inner: TurnEvents = inner or NullTurnEvents()
         self.home = home
         self.record_enabled = record_enabled
+        self.on_tool_start_hook = on_tool_start_hook
         self.started = time.monotonic()
         self.started_at = datetime.now(UTC)
         self.tool_calls = 0
@@ -120,6 +122,10 @@ class LoggingTurnEvents:
         await self.inner.on_stream_delta(text)
 
     async def on_tool_start(self, name: str, args: dict[str, Any]) -> None:
+        if self.on_tool_start_hook is not None:
+            # Best-effort; a hook failure must never abort the tool call.
+            with suppress(Exception):
+                await self.on_tool_start_hook(name)
         self.tool_calls += 1
         self._tool_starts.setdefault(name, []).append(time.monotonic())
         if name == "skill_view":

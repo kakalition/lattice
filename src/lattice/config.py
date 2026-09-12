@@ -86,6 +86,10 @@ class MemoryConfig(BaseModel):
     self_check: bool = True
     # Bound each background memory job so one hung write cannot starve the queue.
     sync_timeout_seconds: int = 60
+    # Cap the pre-model memory recall. 0 disables it (recall runs unbounded, as
+    # before); a positive value drops memories and logs a warning on timeout so a
+    # slow embed cannot delay the whole turn.
+    search_timeout_seconds: float = 0.0
 
 
 class ObservabilityConfig(BaseModel):
@@ -366,6 +370,9 @@ memory:
   self_check: true
   # Bound each background memory write so a hung job cannot starve the queue.
   sync_timeout_seconds: 60
+  # Cap pre-model memory recall; 0 = unbounded (default). A positive value drops
+  # memories and logs a warning on timeout so slow embeddings cannot delay turns.
+  # search_timeout_seconds: 0.0
 
 tools:
   allow: ["*"]
