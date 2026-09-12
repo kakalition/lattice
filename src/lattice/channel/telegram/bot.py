@@ -135,11 +135,8 @@ class TelegramBot:
                         reply_markup=kwargs.get("reply_markup"),
                     )
 
-        async def _send_for_hitl(
-            context: ContextTypes.DEFAULT_TYPE, chat_id: int, *, mark: list[bool]
-        ):
+        async def _send_for_hitl(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             async def _inner(*, text: str, buttons: list[dict[str, str]] | None = None) -> None:
-                mark[0] = True
                 await send_html(chat_id, text, buttons=buttons, context=context)
 
             return _inner
@@ -458,11 +455,8 @@ class TelegramBot:
                 opening = idle_phrase(0)
                 status = await update.message.reply_text(opening)
                 sticky = await self.store.get_sticky_profile("telegram", str(uid)) or "default"
-                # When HITL prompts are sent after the status bubble, editing that status
-                # buries the final reply above the approvals — send a new message instead.
-                hitl_after_status = [False]
                 self.hitl.set_active_user(str(uid))
-                self.hitl.bind_send(await _send_for_hitl(context, chat_id, mark=hitl_after_status))
+                self.hitl.bind_send(await _send_for_hitl(context, chat_id))
                 logger.info(
                     "recv user=%s profile=%s text=%s",
                     uid,
@@ -510,14 +504,9 @@ class TelegramBot:
                 logger.info("send user=%s chars=%d", uid, len(outbound.text or ""))
                 if outbound.session_id:
                     self._sessions[uid] = outbound.session_id
-                edit_id = None if hitl_after_status[0] else status.message_id
-                if hitl_after_status[0]:
-                    with contextlib.suppress(Exception):
-                        await context.bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=status.message_id,
-                            text="…",
-                        )
+                # Always deliver the final answer as a new message. Editing the
+                # status bubble updates it in place, and Telegram sends no push
+                # notification for edits, so the reply would arrive silently.
                 # A bare "ok" deserves something warmer and non-repeating.
                 reply_text = warm_confirmation(outbound.text) or outbound.text
                 await send_html(
@@ -526,9 +515,11 @@ class TelegramBot:
                     buttons=[{"label": b.label, "data": b.data} for b in outbound.buttons]
                     if outbound.buttons
                     else None,
-                    edit_message_id=edit_id,
                     context=context,
                 )
+                # Clear the transient thinking bubble now the real reply is sent.
+                with contextlib.suppress(Exception):
+                    await context.bot.delete_message(chat_id=chat_id, message_id=status.message_id)
                 if outbound.media_paths:
                     for mp in outbound.media_paths:
                         suf = Path(mp).suffix.lower()
