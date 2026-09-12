@@ -45,7 +45,7 @@ def test_default_tiers_partition_all_core_tools() -> None:
     assert "read_file" in eager
     assert "shell" in eager
     assert "remove_path" in eager
-    assert "delegate" in eager
+    assert "web_search" in eager
     # Cold by default.
     assert "browser_interact" not in eager
     assert "generate_pdf" not in eager
@@ -78,9 +78,9 @@ def test_cold_tools_are_deferred_not_absent() -> None:
 
 
 def test_exclude_drops_tool_entirely() -> None:
-    toolsets = build_toolsets(exclude=frozenset({"delegate", "shell"}))
+    toolsets = build_toolsets(exclude=frozenset({"web_search", "shell"}))
     names = _all_names(toolsets)
-    assert "delegate" not in names
+    assert "web_search" not in names
     assert "shell" not in names
     assert "read_file" in names
 

@@ -47,18 +47,13 @@ uv run lattice gateway
 
 | Key | Role |
 |-----|------|
-| `agent.primary_model` | Orchestrator (user-facing turn, HIGH route) |
-| `agent.secondary_model` | Depth-1 worker via `delegate` tool |
-| `agent.auxiliary_model` | Context compression only |
-| `provider.fallback_model` | Rate-limit failover for primary |
-| `agent.orchestrator.enabled` | Whole-turn routing, default `true` |
-| `agent.orchestrator.classifier_model` | Router classifier (default: resolved primary) |
-| `agent.orchestrator.worker_model` | LOW-branch worker (default: `secondary_model`) |
-| `agent.orchestrator.classifier_max_tokens` | Optional classifier output cap (default: none) |
+| `agent.primary_model` | The single model that runs every turn |
 
-Prompt caching: primary keeps a stable system prefix (SOUL/USER/skills/routing) and passes session `message_history`; volatile notices go in the user tail. On OpenRouter (`openrouter.ai` base URL) Lattice builds `OpenRouterModel` and, for Anthropic/Gemini models, marks stable instructions, tool definitions, and the last replayed user prompt with an explicit `CachePoint` boundary; `agent.prompt_cache` (default `true`) and `agent.prompt_cache_ttl` (`5m`/`1h`) control this. Other endpoints use provider auto-cache, and each turn persists `cache_read_tokens`/`cache_write_tokens`/`cache_hit_ratio` in `sessions.usage_json` and the turn log. Secondary uses a constant system prompt and fixed tool schemas. On OpenRouter every request also carries a body-level `session_id` (sticky provider routing), which keeps the auto-cache locality for providers such as DeepSeek that expose no explicit `CachePoint`.
+A profile may override the model with `primary_model` (or legacy `model`), and the sticky
+`/model [id|clear]` command overrides it per channel+user; exactly one model is active per
+turn. Context compression and mem0 fact extraction run on that same resolved model.
 
-Whole-turn routing: unless bypassed, a tool-free classifier shares the primary's byte-stable system prompt and replies with small JSON (`LOW`/`HIGH`). `LOW` dispatches a user-facing worker (`gpt-oss-120b` by default, same tools as the primary minus `delegate`) whose text is the final reply; `HIGH` runs the normal primary loop. The classifier has no output cap by default (optional `classifier_max_tokens`) and fails safe to `HIGH`. Deterministic `HIGH` bypass applies when the turn carries media, a `[steer]` note, or an injected `model=`. Each turn's `sessions.usage_json` records `route` and the classifier usage alongside the executor usage. Disable with `agent.orchestrator.enabled: false`.
+Prompt caching: the primary keeps a stable system prefix (SOUL/USER/skills) and passes session `message_history`; volatile notices go in the user tail. On OpenRouter (`openrouter.ai` base URL) Lattice builds `OpenRouterModel` and, for Anthropic/Gemini models, marks stable instructions, tool definitions, and the last replayed user prompt with an explicit `CachePoint` boundary; `agent.prompt_cache` (default `true`) and `agent.prompt_cache_ttl` (`5m`/`1h`) control this. Other endpoints use provider auto-cache, and each turn persists `cache_read_tokens`/`cache_write_tokens`/`cache_hit_ratio` in `sessions.usage_json` and the turn log. On OpenRouter every request also carries a body-level `session_id` (sticky provider routing), which keeps the auto-cache locality for providers such as DeepSeek that expose no explicit `CachePoint`.
 
 
 ## Dev

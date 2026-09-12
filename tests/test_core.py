@@ -13,7 +13,6 @@ from lattice.hitl.policies import shell_needs_approval, sql_needs_approval, tool
 from lattice.profiles import ensure_default_profile, load_profile, merge_tool_policy
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers.errors import FailoverReason, classify_provider_error, recovery_action
-from lattice.providers.fallback_cooldown import FallbackCooldown
 from lattice.session import SessionStore, sanitize_messages
 from lattice.setup import init_home, write_skill_starters
 from lattice.skills import scan_skills, skill_index_entries, skill_view
@@ -138,7 +137,6 @@ def test_prompt_bundle_stable() -> None:
     assert b.system_prompt() == b.stable_system_prompt()
     assert b.system_prompt() == b.system_prompt()
     assert "available_skills" in b.system_prompt()
-    assert "Orchestration" in b.stable_system_prompt()
 
 
 def test_prompt_notices_are_volatile_only() -> None:
@@ -168,16 +166,9 @@ def test_sanitize_messages() -> None:
 
 def test_error_taxonomy() -> None:
     assert classify_provider_error(RuntimeError("429 rate limit")) == FailoverReason.RATE_LIMIT
+    assert recovery_action(FailoverReason.RATE_LIMIT) == "retry"
     assert recovery_action(FailoverReason.CONTEXT_OVERFLOW) == "compress"
     assert recovery_action(FailoverReason.AUTH) == "abort"
-
-
-def test_fallback_cooldown() -> None:
-    c = FallbackCooldown(base_seconds=0.01, max_seconds=0.05)
-    assert c.primary_allowed()
-    c.mark_fallback()
-    c.clear()
-    assert c.primary_allowed()
 
 
 def test_init_and_skills(tmp_path: Path) -> None:

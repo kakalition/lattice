@@ -33,7 +33,7 @@ def resolve_model_id(
     profile_model: str | None = None,
     sticky_model: str | None = None,
 ) -> str:
-    """Primary (orchestrator) model id. Sticky chat override wins over profile and config."""
+    """Active model id. Sticky chat override wins over profile and config."""
     if sticky_model:
         return sticky_model
     if profile_model:
@@ -46,40 +46,6 @@ def normalize_primary_model_id(raw: str) -> str:
     if not mid or "\n" in mid or "\r" in mid or len(mid) > 200:
         raise ValueError("invalid model id")
     return mid
-
-
-def model_name(
-    settings: LatticeSettings,
-    *,
-    profile_model: str | None = None,
-    sticky_model: str | None = None,
-) -> str:
-    return resolve_model_id(settings, profile_model=profile_model, sticky_model=sticky_model)
-
-
-def secondary_model_name(settings: LatticeSettings, *, profile_secondary: str | None = None) -> str:
-    """Worker model id: configured worker override wins over profile then agent default."""
-    return (
-        settings.agent.orchestrator.worker_model
-        or profile_secondary
-        or settings.agent.secondary_model
-    )
-
-
-def classifier_model_name(
-    settings: LatticeSettings,
-    *,
-    profile_model: str | None = None,
-    sticky_model: str | None = None,
-) -> str:
-    """Classifier model id: explicit override, else the same id the primary resolves to."""
-    return settings.agent.orchestrator.classifier_model or resolve_model_id(
-        settings, profile_model=profile_model, sticky_model=sticky_model
-    )
-
-
-def auxiliary_model_name(settings: LatticeSettings, *, profile_aux: str | None = None) -> str:
-    return profile_aux or settings.agent.auxiliary_model
 
 
 def apply_provider_env(provider: ProviderConfig) -> None:

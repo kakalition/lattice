@@ -111,8 +111,8 @@ def test_mem0_llm_model_ignores_legacy_env(monkeypatch, tmp_path: Path) -> None:
     assert cfg["llm"]["config"]["model"] == "inception/mercury-2.5"
 
 
-def test_build_memory_for_profile_uses_auxiliary_model(tmp_path: Path, monkeypatch) -> None:
-    """The mem0 backend must carry the profile's configured auxiliary model."""
+def test_build_memory_for_profile_uses_primary_model(tmp_path: Path, monkeypatch) -> None:
+    """The mem0 backend must carry the resolved primary model."""
     import lattice.agent_app as agent_app
     from lattice.config import LatticeSettings
     from lattice.profiles import Profile
@@ -127,13 +127,17 @@ def test_build_memory_for_profile_uses_auxiliary_model(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(agent_app, "build_memory", fake_build_memory)
     settings = LatticeSettings(home=tmp_path)
-    settings.agent.auxiliary_model = "inception/mercury-2.5"
+    settings.agent.primary_model = "inception/mercury-2.5"
 
     agent_app.build_memory_for_profile(settings, Profile(id="p"))
     assert captured["model"] == "inception/mercury-2.5"
 
-    agent_app.build_memory_for_profile(settings, Profile(id="q", auxiliary_model="other/model"))
+    agent_app.build_memory_for_profile(settings, Profile(id="q", primary_model="other/model"))
     assert captured["model"] == "other/model"
+
+    # An explicit model_id (the turn's sticky resolution) wins over config/profile.
+    agent_app.build_memory_for_profile(settings, Profile(id="r"), model_id="sticky/model")
+    assert captured["model"] == "sticky/model"
 
 
 def test_mem0_qdrant_init_enables_bm25(tmp_path: Path, caplog) -> None:

@@ -1,4 +1,4 @@
-"""Auxiliary LLM client for compression / vision."""
+"""Conversation summarizer for context compression (runs on the primary model)."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from lattice.config import LatticeSettings
 from lattice.providers.openai_compat import build_openai_model
 
 
-class AuxiliaryClient:
-    def __init__(self, settings: LatticeSettings, model_id: str | None = None) -> None:
+class Summarizer:
+    def __init__(self, settings: LatticeSettings, model_id: str) -> None:
         self.settings = settings
-        self.model_id = model_id or settings.agent.auxiliary_model
+        self.model_id = model_id
         self._agent = Agent(
-            build_openai_model(settings, self.model_id),
+            build_openai_model(settings, model_id),
             system_prompt="You summarize conversation transcripts concisely for long-term context.",
         )
 

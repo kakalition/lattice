@@ -88,8 +88,6 @@ class Profile(BaseModel):
     memory_collection: str | None = None
     model: str | None = None  # legacy alias for primary_model
     primary_model: str | None = None
-    secondary_model: str | None = None
-    auxiliary_model: str | None = None
     workspace: Path | None = None
     root: Path | None = None
 
@@ -190,8 +188,6 @@ def load_profile(profile_id: str, home: Path | None = None) -> Profile:
         memory_collection=memory.get("collection"),
         model=data.get("primary_model") or data.get("model"),
         primary_model=data.get("primary_model") or data.get("model"),
-        secondary_model=data.get("secondary_model"),
-        auxiliary_model=data.get("auxiliary_model"),
         workspace=Path(workspace).expanduser() if workspace else None,
         root=root,
     )

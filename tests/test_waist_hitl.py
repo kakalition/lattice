@@ -20,7 +20,6 @@ from lattice.mcp import McpHostManager
 from lattice.memory import InMemoryMemory
 from lattice.models import Inbound
 from lattice.profiles import Profile, ensure_default_profile, load_profile, merge_tool_policy
-from lattice.providers import FallbackCooldown
 from lattice.session import SessionStore
 from lattice.setup import init_home, write_skill_starters
 from lattice.sqlite import SqlitePool, SqliteRegistry
@@ -62,7 +61,6 @@ def _deps(tmp_path: Path, hitl: Any, *, enabled: list[str] | None = None) -> Tur
         workspace=tmp_path,
         enabled_tools=enabled or list(CORE_TOOL_NAMES),
         skills=[],
-        cooldown=FallbackCooldown(),
     )
 
 
@@ -102,9 +100,7 @@ async def test_maybe_approve_consecutive_denial_breaker(tmp_path: Path) -> None:
     deps = _deps(tmp_path, hitl)
     ctx = SimpleNamespace(deps=deps)
     for i in range(2):
-        out = await maybe_approve(
-            ctx, "sqlite_execute", f"f{i}", name=f"f{i}", sql="DELETE FROM t"
-        )  # type: ignore[arg-type]
+        out = await maybe_approve(ctx, "sqlite_execute", f"f{i}", name=f"f{i}", sql="DELETE FROM t")  # type: ignore[arg-type]
         assert out == "denied: deny"
     out = await maybe_approve(ctx, "sqlite_execute", "f3", name="f3", sql="DELETE FROM t")  # type: ignore[arg-type]
     assert out == "denied (consecutive denial breaker)"
@@ -278,15 +274,14 @@ async def test_telegram_hitl_cancel_all() -> None:
         return None
 
     adapter.bind_send(send_fn)
-    task = asyncio.create_task(
-        adapter.approve(ApprovalRequest(tool_name="shell", summary="rm"))
-    )
+    task = asyncio.create_task(adapter.approve(ApprovalRequest(tool_name="shell", summary="rm")))
     for _ in range(50):
         if adapter._pending:
             break
         await asyncio.sleep(0.01)
     assert adapter.cancel_all("cancel") == 1
     assert await task == ApprovalDecision.CANCELLED
+
 
 @pytest.mark.asyncio
 async def test_telegram_hitl_timeout() -> None:

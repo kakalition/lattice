@@ -487,8 +487,6 @@ memory:
   collection: lattice-my-profile
 # optional:
 # primary_model: …
-# secondary_model: …
-# auxiliary_model: …
 # sqlite:
 #   allow: [ledger]
 # workspace: null
@@ -640,19 +638,11 @@ def doctor_report(home: Path | None = None) -> list[str]:
     lines.append(f"home: {root} exists={root.is_dir()}")
     settings = load_settings(root) if root.is_dir() else None
     if settings:
-        from lattice.providers.settings import (
-            auxiliary_model_name,
-            resolve_base_url,
-            resolve_model_id,
-            secondary_model_name,
-        )
+        from lattice.providers.settings import resolve_base_url, resolve_model_id
 
         key = resolve_api_key(settings)
         lines.append(f"api_key: {'set' if key else 'missing'}")
         lines.append(f"primary_model: {resolve_model_id(settings)}")
-        lines.append(f"secondary_model: {secondary_model_name(settings)}")
-        lines.append(f"auxiliary_model: {auxiliary_model_name(settings)}")
-        lines.append(f"fallback_model: {settings.provider.fallback_model or '(none)'}")
         base = resolve_base_url(settings)
         lines.append(f"base_url: {base or '(default openai)'}")
         lines.append(f"telegram_token: {'set' if settings.telegram.token else 'missing'}")

@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from lattice.context.pressure import PressureConfig
-from lattice.providers.auxiliary import AuxiliaryClient
+from lattice.providers.summarizer import Summarizer
 
 
 class CompressResult(BaseModel):
@@ -35,7 +35,7 @@ def _tool_pair_indices(messages: list[dict[str, Any]]) -> set[int]:
 async def compress(
     messages: list[dict[str, Any]],
     *,
-    aux: AuxiliaryClient | None,
+    aux: Summarizer | None,
     protect_last_n: int = 20,
     pressure: PressureConfig | None = None,
 ) -> CompressResult:

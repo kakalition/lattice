@@ -241,18 +241,23 @@ def resolve_enabled_tools(
     )
 
 
-def build_memory_for_profile(settings: LatticeSettings, profile: Profile) -> Memory:
-    from lattice.providers.settings import apply_provider_env, auxiliary_model_name
+def build_memory_for_profile(
+    settings: LatticeSettings, profile: Profile, *, model_id: str | None = None
+) -> Memory:
+    from lattice.providers.settings import apply_provider_env, resolve_model_id
 
     apply_provider_env(settings.provider)
     collection = profile.memory_collection or f"lattice-{profile.id}"
-    # mem0 runs an LLM to extract memories; keep it on the configured auxiliary
-    # model instead of mem0's built-in gpt-4o-mini default, and let reasoning
-    # models use their own parameter set (mem0 only auto-detects o1/o3/gpt-5).
+    # mem0 runs an LLM to extract memories; keep it on the active primary model
+    # instead of mem0's built-in gpt-4o-mini default, and let reasoning models use
+    # their own parameter set (mem0 only auto-detects o1/o3/gpt-5).
+    resolved = model_id or resolve_model_id(
+        settings, profile_model=profile.primary_model or profile.model
+    )
     return build_memory(
         collection=collection,
         path=settings.home / "qdrant",
-        llm_model=auxiliary_model_name(settings, profile_aux=profile.auxiliary_model),
+        llm_model=resolved,
         is_reasoning_model=settings.memory.is_reasoning_model,
     )
 

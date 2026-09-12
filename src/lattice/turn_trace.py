@@ -109,29 +109,21 @@ class LoggingTurnEvents:
         outbound_text: str,
         error: str | None = None,
         usage: dict[str, Any] | None = None,
-        route: str | None = None,
-        route_source: str | None = None,
         timings: Mapping[str, float] | None = None,
     ) -> None:
         ms = int((time.monotonic() - self.started) * 1000)
         if error:
             self._p("ERROR after %dms: %s", ms, error)
         self._p("outbound: %s", _clip(outbound_text, 4000))
-        route_suffix = f" route={route}" if route else ""
-        if route_source:
-            route_suffix += f" source={route_source}"
         phases = self.phases if timings is None else timings
         timing_suffix = "".join(
-            f" {name}_ms={int(phases[name] * 1000)}"
-            for name in ("routing", "classifier", "executor")
-            if name in phases
+            f" {name}_ms={int(phases[name] * 1000)}" for name in phases
         )
         self._p(
-            "END duration_ms=%d tool_calls=%d skills_used=%s%s%s",
+            "END duration_ms=%d tool_calls=%d skills_used=%s%s",
             ms,
             self.tool_calls,
             ",".join(self.skills_used) or "(none)",
-            route_suffix,
             timing_suffix,
         )
         if usage:
@@ -146,11 +138,3 @@ class LoggingTurnEvents:
                 float(usage.get("cache_hit_ratio", 0.0) or 0.0),
                 usage.get("requests", 0),
             )
-            wasted = usage.get("wasted_worker_usage") or {}
-            if int(wasted.get("input_tokens", 0) or 0) or int(wasted.get("output_tokens", 0) or 0):
-                self._p(
-                    "wasted_worker_usage: model=%s input=%s output=%s",
-                    wasted.get("model", "?"),
-                    wasted.get("input_tokens", 0),
-                    wasted.get("output_tokens", 0),
-                )

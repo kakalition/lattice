@@ -150,7 +150,7 @@ def _mem0_config(
     )
     # mem0 calls an LLM to extract facts; without an explicit model it hardcodes
     # gpt-4o-mini, which silently bills OpenAI even when lattice.yaml configures
-    # a different provider. Callers pass settings.agent.auxiliary_model.
+    # a different provider. Callers pass the resolved primary model.
     model = llm_model or os.environ.get("LATTICE_AGENT__MODEL") or "gpt-4o-mini"
     llm_config: dict[str, Any] = {"model": model}
     if api_key:
@@ -398,7 +398,7 @@ def build_memory(
 ) -> Mem0QdrantMemory:
     root = (path or (lattice_home() / "qdrant")).resolve()
     # Cache on the model as well: mem0 bakes it into the instance, so a profile
-    # with a different auxiliary model must not receive the wrong backend.
+    # with a different model must not receive the wrong backend.
     key = (str(root), collection, llm_model or "")
     with _client_lock:
         existing = _instances.get(key)

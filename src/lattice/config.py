@@ -79,48 +79,9 @@ class MemoryConfig(BaseModel):
     self_check: bool = True
 
 
-class OrchestratorConfig(BaseModel):
-    """Whole-turn routing between the primary and a user-facing worker.
-
-    The classifier shares the primary's stable system prefix so provider-side
-    prompt caching covers the instructions on every turn. Set ``enabled: false``
-    to always run the primary (legacy behavior).
-    """
-
-    enabled: bool = True
-    # None → use the resolved primary model for classification. Pointing this at
-    # a small/fast model is the main classifier-latency lever, at the cost of
-    # losing the shared primary prefix cache (prefer a fast model only when
-    # classifier latency dominates).
-    classifier_model: str | None = None
-    # None → use ``agent.secondary_model`` (profile override still wins).
-    worker_model: str | None = None
-    # None (default) → no output cap on the classifier; a cap can truncate the
-    # routing JSON and force a needless HIGH fallback.
-    classifier_max_tokens: int | None = None
-    # Classifier deadline; a timeout is fail-safe HIGH. Decoupled from
-    # ``idle_watchdog_seconds`` so a slow classifier cannot stall the turn.
-    classifier_timeout_seconds: float = 12.0
-    # Truncate the user text sent to the classifier (the ``[route]`` marker is
-    # prepended after truncation so it is never lost).
-    classifier_input_chars: int = 2000
-    # LOW worker deadline; on timeout the turn falls back to the primary.
-    worker_timeout_seconds: float = 30.0
-    # Deterministic pre-gate: confidently LOW/HIGH turns skip the classifier.
-    heuristic_gate: bool = True
-    # Start the LOW worker alongside the classifier so ambiguous LOW turns pay
-    # ``max(classifier, worker)``. The worker is always cancelled before HIGH.
-    speculative_worker: bool = True
-    # On an already-HIGH session, resolve otherwise-ambiguous turns to HIGH.
-    sticky_high: bool = True
-
-
 class AgentConfig(BaseModel):
     workspace: Path | None = None
     primary_model: str = "openai:gpt-4o"
-    secondary_model: str = "openai:gpt-4o-mini"
-    auxiliary_model: str = "openai:gpt-4o-mini"
-    secondary_max_iterations: int = 8
     iteration_budget: int = 40
     hitl_timeout_seconds: int = 600
     context_pressure_ratio: float = 0.5
@@ -130,13 +91,11 @@ class AgentConfig(BaseModel):
     # No-op for providers without explicit cache control (OpenAI/DeepSeek auto-cache).
     prompt_cache: bool = True
     prompt_cache_ttl: Literal["5m", "1h"] = "5m"
-    orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
 
 
 class ProviderConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
-    fallback_model: str | None = None
 
 
 class BrowserChannel(StrEnum):
@@ -330,31 +289,12 @@ timezone: Asia/Jakarta
 
 agent:
   primary_model: deepseek/deepseek-v4.1-flash
-  secondary_model: inception/mercury-2.5
-  auxiliary_model: inception/mercury-2.5
-  secondary_max_iterations: 8
   iteration_budget: 40
   hitl_timeout_seconds: 600
   workspace: null
   # Explicit prompt caching for OpenRouter Anthropic/Gemini models.
   # prompt_cache: true
   # prompt_cache_ttl: 5m   # 5m | 1h (1h is Anthropic-only)
-  # Whole-turn routing: a share-prefix classifier picks LOW (user-facing worker)
-  # or HIGH (primary). Deterministic HIGH bypass for media/steer/injected model.
-  orchestrator:
-    enabled: true
-    classifier_model: null   # default: resolved primary
-    worker_model: null       # default: secondary_model
-    classifier_max_tokens: null   # null = no cap (a cap can truncate the routing JSON)
-    classifier_timeout_seconds: 12   # classifier deadline; timeout → fail-safe HIGH
-    classifier_input_chars: 2000     # truncate user text sent to the classifier
-    worker_timeout_seconds: 30       # LOW worker deadline; timeout → HIGH fallback
-    heuristic_gate: true             # confident LOW/HIGH turns skip the classifier
-    speculative_worker: true         # overlap the LOW worker with the classifier
-    sticky_high: true                # ambiguous turn in a HIGH session → HIGH
-
-provider:
-  fallback_model: inception/mercury-2.5
 
 tools:
   allow: ["*"]

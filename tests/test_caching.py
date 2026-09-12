@@ -9,8 +9,12 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.usage import RunUsage
 
-from lattice.config import LatticeSettings
-from lattice.providers.caching import prompt_cache_settings, supports_explicit_cache
+from lattice.config import LatticeSettings, ProviderConfig
+from lattice.providers.caching import (
+    prompt_cache_settings,
+    session_routing_settings,
+    supports_explicit_cache,
+)
 from lattice.providers.openai_compat import build_openai_model, is_openrouter
 from lattice.providers.usage import usage_to_dict
 
@@ -97,3 +101,18 @@ def test_usage_to_dict_reports_cache_metrics() -> None:
     assert data["requests"] == 2
     assert data["cost"] == 0.02
     assert usage_to_dict(None, model="m") == {"model": "m"}
+
+
+def test_session_routing_openrouter(tmp_path: Path) -> None:
+    settings = _openrouter_settings(tmp_path)
+    assert session_routing_settings(settings, "sess-1") == {"extra_body": {"session_id": "sess-1"}}
+    assert session_routing_settings(settings, "") == {}
+    assert session_routing_settings(settings, "   ") == {}
+    assert session_routing_settings(settings, "x" * 257) == {}
+
+
+def test_session_routing_non_openrouter(tmp_path: Path) -> None:
+    settings = LatticeSettings(
+        home=tmp_path, provider=ProviderConfig(base_url="https://api.example.com/v1")
+    )
+    assert session_routing_settings(settings, "sess-1") == {}

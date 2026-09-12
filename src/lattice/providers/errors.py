@@ -36,9 +36,9 @@ def classify_provider_error(exc: BaseException) -> FailoverReason:
 
 
 def recovery_action(reason: FailoverReason) -> str:
-    """Map taxonomy → retry / compress / fallback / abort."""
+    """Map taxonomy → retry / compress / abort."""
     return {
-        FailoverReason.RATE_LIMIT: "fallback",
+        FailoverReason.RATE_LIMIT: "retry",
         FailoverReason.CONTEXT_OVERFLOW: "compress",
         FailoverReason.EMPTY_COMPLETION: "retry",
         FailoverReason.TRUNCATED_TOOL_JSON: "retry",

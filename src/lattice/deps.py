@@ -15,7 +15,6 @@ from lattice.hitl import ApprovalDecision, ApprovalRequest, HitlPort, tool_needs
 from lattice.mcp import McpHostManager
 from lattice.memory import Memory
 from lattice.profiles import Profile
-from lattice.providers import FallbackCooldown
 from lattice.session import SessionStore
 from lattice.sqlite import SqlitePool, SqliteRegistry
 from lattice.tools.todo import TodoList
@@ -37,7 +36,6 @@ CORE_TOOL_NAMES = [
     "execute_script",
     "clarify",
     "todo",
-    "delegate",
     "schedule_add",
     "schedule_list",
     "schedule_cancel",
@@ -67,7 +65,7 @@ class ApprovalMemory(set[str]):
 
     Subclasses ``set`` so pydantic keeps the *same instance* on assignment (a plain
     ``set[str]`` field is copied on validation, which would break the deliberate
-    primary↔secondary sharing of approval memory in ``run_secondary``).
+    sharing of approval memory across nested tool calls).
     """
 
 
@@ -93,8 +91,6 @@ class TurnDeps(BaseModel):
     user_tools: list = Field(default_factory=list)
     user_id: str = "local"
     channel: str = "cli"
-    cooldown: FallbackCooldown = Field(default_factory=FallbackCooldown)
-    delegate_depth: int = 0
     outbound_media: list[Path] = Field(default_factory=list)
 
 

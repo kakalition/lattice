@@ -42,20 +42,11 @@ async def test_logging_turn_events_records_tools_and_skills(caplog) -> None:
 async def test_logging_turn_events_reports_phase_timings(caplog) -> None:
     trace = LoggingTurnEvents("timing123")
     with caplog.at_level(logging.INFO, logger="lattice.turn"):
-        with trace.timed("routing"), trace.timed("classifier"):
-            pass
         with trace.timed("executor"):
             pass
         trace.log_end(
             outbound_text="done",
-            route="low",
-            route_source="classifier",
             timings=trace.phases,
-            usage={"wasted_worker_usage": {"model": "worker", "input_tokens": 3}},
         )
     text = "\n".join(r.message for r in caplog.records)
-    assert "routing_ms=" in text
-    assert "classifier_ms=" in text
     assert "executor_ms=" in text
-    assert "source=classifier" in text
-    assert "wasted_worker_usage: model=worker input=3" in text
