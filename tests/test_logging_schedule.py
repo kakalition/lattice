@@ -388,13 +388,45 @@ def test_secondary_gated_tool_is_hitl_gated_when_enabled(tmp_path: Path) -> None
 
 
 def test_session_dicts_to_history() -> None:
+    from pydantic_ai.messages import CachePoint, ModelRequest, SystemPromptPart, UserPromptPart
+
     from lattice.session_history import session_dicts_to_history
 
     hist = session_dicts_to_history(
         [
+            {"role": "system", "content": "compressed summary"},
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},
             {"role": "tool", "content": "ignored"},
         ]
     )
-    assert len(hist) == 2
+    # system round-trips (compression summary), tool is still dropped
+    assert len(hist) == 3
+    system_part = hist[0].parts[0]
+    assert isinstance(system_part, SystemPromptPart)
+    assert system_part.content == "compressed summary"
+
+    plain = session_dicts_to_history([{"role": "user", "content": "hi"}])
+    plain_part = plain[0].parts[0]
+    assert isinstance(plain_part, UserPromptPart)
+    assert plain_part.content == "hi"
+
+    cached = session_dicts_to_history(
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "tool", "content": "ignored"},
+        ],
+        cache_boundary=True,
+        cache_ttl="1h",
+    )
+    user_part = next(
+        p
+        for m in cached
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, UserPromptPart)
+    )
+    assert isinstance(user_part.content, list)
+    assert isinstance(user_part.content[-1], CachePoint)
+    assert user_part.content[-1].ttl == "1h"

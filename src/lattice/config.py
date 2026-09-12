@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -90,6 +90,10 @@ class AgentConfig(BaseModel):
     context_pressure_ratio: float = 0.5
     protect_last_n: int = 20
     idle_watchdog_seconds: int = 600
+    # Explicit prompt caching for capable OpenRouter models (Anthropic/Gemini).
+    # No-op for providers without explicit cache control (OpenAI/DeepSeek auto-cache).
+    prompt_cache: bool = True
+    prompt_cache_ttl: Literal["5m", "1h"] = "5m"
 
 
 class ProviderConfig(BaseModel):
@@ -295,6 +299,9 @@ agent:
   iteration_budget: 40
   hitl_timeout_seconds: 600
   workspace: null
+  # Explicit prompt caching for OpenRouter Anthropic/Gemini models.
+  # prompt_cache: true
+  # prompt_cache_ttl: 5m   # 5m | 1h (1h is Anthropic-only)
 
 provider:
   fallback_model: inception/mercury-2.5

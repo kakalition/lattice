@@ -90,7 +90,13 @@ class LoggingTurnEvents:
             ", ".join(skill_names) or "(none)",
         )
 
-    def log_end(self, *, outbound_text: str, error: str | None = None) -> None:
+    def log_end(
+        self,
+        *,
+        outbound_text: str,
+        error: str | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
         ms = int((time.monotonic() - self.started) * 1000)
         if error:
             self._p("ERROR after %dms: %s", ms, error)
@@ -101,3 +107,15 @@ class LoggingTurnEvents:
             self.tool_calls,
             ",".join(self.skills_used) or "(none)",
         )
+        if usage:
+            self._p(
+                "usage: model=%s input=%s output=%s cache_read=%s cache_write=%s "
+                "cache_hit_ratio=%.3f requests=%s",
+                usage.get("model", "?"),
+                usage.get("input_tokens", 0),
+                usage.get("output_tokens", 0),
+                usage.get("cache_read_tokens", 0),
+                usage.get("cache_write_tokens", 0),
+                float(usage.get("cache_hit_ratio", 0.0) or 0.0),
+                usage.get("requests", 0),
+            )

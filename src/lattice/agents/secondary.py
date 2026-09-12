@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import Agent
@@ -10,13 +11,17 @@ from pydantic_ai.usage import UsageLimits
 from lattice.agent_app import build_core_toolset, tool_search_capability
 from lattice.config import LatticeSettings
 from lattice.deps import CORE_TOOL_NAMES
+from lattice.providers.caching import prompt_cache_settings
 from lattice.providers.openai_compat import build_openai_model
 from lattice.providers.settings import secondary_model_name
+from lattice.providers.usage import usage_to_dict
 from lattice.runtime import set_cwd
 from lattice.tools.deadline import with_deadline
 
 if TYPE_CHECKING:
     from lattice.deps import TurnDeps
+
+logger = logging.getLogger("lattice.secondary")
 
 # `delegate` is deliberately excluded: only the primary may dispatch a worker.
 SECONDARY_TOOL_NAMES = [n for n in CORE_TOOL_NAMES if n != "delegate"]
@@ -118,12 +123,18 @@ async def run_secondary(
 
     async def _run() -> str:
         set_cwd(deps.workspace)
+        model_obj = build_openai_model(settings, model_id)
         result = await agent.run(
             user_prompt,
             deps=secondary_deps,
             usage_limits=limits,
-            model=build_openai_model(settings, model_id),
+            model=model_obj,
             toolsets=toolsets,
+            model_settings=prompt_cache_settings(settings, model_obj) or None,
+        )
+        logger.debug(
+            "secondary usage: %s",
+            usage_to_dict(getattr(result, "usage", None), model=model_id),
         )
         return truncate_result(str(result.output))
 

@@ -62,6 +62,29 @@ def test_mcp_toolset_surfaces_discovered_tools() -> None:
     assert all(t.tool_def.defer_loading for t in dtools.values())
 
 
+def test_mcp_toolset_sorts_tools_by_name() -> None:
+    """Schema order must be byte-stable regardless of discovery order."""
+    import asyncio
+    from dataclasses import dataclass
+
+    from lattice.mcp.toolset import McpToolset
+
+    @dataclass
+    class _Ctx:
+        max_retries: int = 1
+
+    mgr = McpHostManager()
+    mgr.register_discovered(
+        [
+            McpToolInfo(server="b", name="z", description="last"),
+            McpToolInfo(server="a", name="m", description="middle"),
+            McpToolInfo(server="a", name="a", description="first"),
+        ]
+    )
+    tools = asyncio.run(McpToolset(mgr).get_tools(_Ctx()))
+    assert list(tools) == ["a/a", "a/m", "b/z"]
+
+
 def test_mcp_call_reports_not_connected() -> None:
     mgr = McpHostManager()
     mgr.register_discovered([McpToolInfo(server="s", name="t3", description="tool 3")])

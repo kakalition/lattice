@@ -149,6 +149,14 @@ def test_prompt_notices_are_volatile_only() -> None:
     assert b.stable_system_prompt() == b2.stable_system_prompt()
 
 
+def test_prompt_volatile_excluded_from_stable_prefix() -> None:
+    b = PromptBundle(identity="I am Lattice", volatile="per-turn blob")
+    assert "per-turn blob" not in b.stable_system_prompt()
+    assert b.volatile_system_prompt() == "per-turn blob"
+    b2 = PromptBundle(identity="I am Lattice", volatile="something else")
+    assert b.stable_system_prompt() == b2.stable_system_prompt()
+
+
 def test_sanitize_messages() -> None:
     msgs = [
         {"role": "assistant", "tool_calls": [{"id": "t1", "function": {"name": "x"}}]},

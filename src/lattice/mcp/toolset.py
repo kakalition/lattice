@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic_core import SchemaValidator, core_schema
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
+from pydantic_core import SchemaValidator, core_schema
 
 from lattice.deps import TurnDeps
 from lattice.mcp.hosts import McpHostManager
@@ -38,7 +38,11 @@ class McpToolset(AbstractToolset[TurnDeps]):
 
     async def get_tools(self, ctx: Any) -> dict[str, ToolsetTool[TurnDeps]]:
         out: dict[str, ToolsetTool[TurnDeps]] = {}
-        for info in self.manager.enabled_tools():
+        # Sort by stable name so MCP tool schemas are byte-identical across
+        # discovery orders, preserving provider-side cache prefixes.
+        for info in sorted(
+            self.manager.enabled_tools(), key=lambda i: mcp_tool_name(i.server, i.name)
+        ):
             name = mcp_tool_name(info.server, info.name)
             out[name] = ToolsetTool(
                 toolset=self,

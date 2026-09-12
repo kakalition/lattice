@@ -6,6 +6,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from pydantic_ai.usage import RunUsage
+
 from lattice.agent_app import (
     TurnDeps,
     build_memory_for_profile,
@@ -27,8 +29,10 @@ from lattice.providers import (
     classify_provider_error,
     recovery_action,
 )
+from lattice.providers.caching import prompt_cache_settings, supports_explicit_cache
 from lattice.providers.fallback_cooldown import FallbackCooldown
 from lattice.providers.settings import resolve_model_id
+from lattice.providers.usage import usage_to_dict
 from lattice.runtime import set_cwd
 from lattice.session import SessionStore, sanitize_messages
 from lattice.session_history import session_dicts_to_history
@@ -153,8 +157,21 @@ async def run_turn(
     preamble = prompt.user_volatile_preamble()
     run_user_prompt = f"{preamble}\n\n{user_content}" if preamble else user_content
 
+    sticky_model = await store.get_sticky_primary_model(inbound.channel, inbound.user_id)
+    primary_id = resolve_model_id(
+        settings,
+        profile_model=profile.primary_model or profile.model,
+        sticky_model=sticky_model,
+    )
+    model_obj = model or build_openai_model(settings, primary_id)
+    cache_settings = prompt_cache_settings(settings, model_obj)
+
     # History before this turn (cacheable prefix); current user saved separately
-    history = session_dicts_to_history(messages)
+    history = session_dicts_to_history(
+        messages,
+        cache_boundary=settings.agent.prompt_cache and supports_explicit_cache(model_obj),
+        cache_ttl=settings.agent.prompt_cache_ttl,
+    )
 
     trace.log_begin(
         channel=inbound.channel,
@@ -188,43 +205,47 @@ async def run_turn(
     messages.append({"role": "user", "content": user_content})
     await store.save_messages(session_id, messages)
 
-    sticky_model = await store.get_sticky_primary_model(inbound.channel, inbound.user_id)
-    primary_id = resolve_model_id(
-        settings,
-        profile_model=profile.primary_model or profile.model,
-        sticky_model=sticky_model,
-    )
     agent = create_agent(
         settings,
         profile,
         system_prompt=system_prompt,
-        model=model or build_openai_model(settings, primary_id),
+        model=model_obj,
         mcp=mcp,
+        model_settings=cache_settings,
     )
 
-    async def _run_once(model_override: str | None = None) -> str:
+    async def _run_once(model_override: str | None = None) -> tuple[str, RunUsage]:
         kwargs: dict[str, Any] = {
             "deps": deps,
             "message_history": history or None,
         }
         if model is not None and model_override is None:
             result = await agent.run(run_user_prompt, **kwargs)
-            return str(result.output)
+            return str(result.output), result.usage
         if model_override:
             from copy import deepcopy
 
             s2 = deepcopy(settings)
             s2.agent.primary_model = model_override
-            local_agent = create_agent(s2, profile, system_prompt=system_prompt, mcp=mcp)
+            override_model = build_openai_model(s2, model_override)
+            local_agent = create_agent(
+                s2,
+                profile,
+                system_prompt=system_prompt,
+                model=override_model,
+                mcp=mcp,
+                model_settings=prompt_cache_settings(s2, override_model),
+            )
             result = await local_agent.run(run_user_prompt, **kwargs)
-            return str(result.output)
+            return str(result.output), result.usage
         result = await agent.run(run_user_prompt, **kwargs)
-        return str(result.output)
+        return str(result.output), result.usage
 
     await events.on_status("thinking")
     deadline = float(settings.agent.idle_watchdog_seconds)
     text = ""
-    usage: dict[str, Any] = {}
+    usage = RunUsage()
+    usage_payload: dict[str, Any] = usage_to_dict(usage, model=primary_id)
     retries = 0
     err: str | None = None
     try:
@@ -232,7 +253,10 @@ async def run_turn(
             if cancel_event and cancel_event.is_set():
                 raise TurnCancelled("cancelled")
             try:
-                text = await with_deadline(_run_once(), seconds=deadline, label="turn")
+                text, attempt_usage = await with_deadline(
+                    _run_once(), seconds=deadline, label="turn"
+                )
+                usage = usage + attempt_usage
                 if not text.strip():
                     raise RuntimeError("empty completion")
                 break
@@ -262,11 +286,12 @@ async def run_turn(
                 if action == "fallback" and settings.provider.fallback_model:
                     deps.cooldown.mark_fallback()
                     try:
-                        text = await with_deadline(
+                        text, attempt_usage = await with_deadline(
                             _run_once(settings.provider.fallback_model),
                             seconds=deadline,
                             label="fallback turn",
                         )
+                        usage = usage + attempt_usage
                         break
                     except Exception:
                         text = f"I hit a provider error: {exc}"
@@ -282,11 +307,11 @@ async def run_turn(
     finally:
         if text:
             messages.append({"role": "assistant", "content": text})
-            usage = {"model": primary_id}
-            await store.save_messages(session_id, messages, usage=usage)
+            usage_payload = usage_to_dict(usage, model=primary_id)
+            await store.save_messages(session_id, messages, usage=usage_payload)
             await memory.sync_turn(messages[-4:])
         await pool.close_all()
-        trace.log_end(outbound_text=text or "", error=err)
+        trace.log_end(outbound_text=text or "", error=err, usage=usage_payload)
 
     await events.on_stream_delta(text)
     media = [p for p in deps.outbound_media if p.exists()]

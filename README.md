@@ -52,7 +52,7 @@ uv run lattice gateway
 | `agent.auxiliary_model` | Context compression only |
 | `provider.fallback_model` | Rate-limit failover for primary |
 
-Prompt caching: primary keeps a stable system prefix (SOUL/USER/skills/routing) and passes session `message_history`; volatile notices go in the user tail. Secondary uses a constant system prompt and fixed tool schemas.
+Prompt caching: primary keeps a stable system prefix (SOUL/USER/skills/routing) and passes session `message_history`; volatile notices go in the user tail. On OpenRouter (`openrouter.ai` base URL) Lattice builds `OpenRouterModel` and, for Anthropic/Gemini models, marks stable instructions, tool definitions, and the last replayed user prompt with an explicit `CachePoint` boundary; `agent.prompt_cache` (default `true`) and `agent.prompt_cache_ttl` (`5m`/`1h`) control this. Other endpoints use provider auto-cache, and each turn persists `cache_read_tokens`/`cache_write_tokens`/`cache_hit_ratio` in `sessions.usage_json` and the turn log. Secondary uses a constant system prompt and fixed tool schemas.
 
 ## Dev
 

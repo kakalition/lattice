@@ -25,7 +25,7 @@ class PromptBundle(BaseModel):
     routing: str = PRIMARY_ROUTING
 
     def stable_system_prompt(self) -> str:
-        """Cacheable system prefix — excludes per-turn notices."""
+        """Cacheable system prefix — excludes per-turn notices and volatile text."""
         parts = [self.identity.strip()]
         if self.context.strip():
             parts.append(self.context.strip())
@@ -33,9 +33,11 @@ class PromptBundle(BaseModel):
             parts.append(self.skill_index.strip())
         if self.routing.strip():
             parts.append(self.routing.strip())
-        if self.volatile.strip():
-            parts.append(self.volatile.strip())
         return "\n\n".join(p for p in parts if p)
+
+    def volatile_system_prompt(self) -> str:
+        """Per-turn system text, kept out of the cacheable prefix."""
+        return self.volatile.strip()
 
     def system_prompt(self) -> str:
         """Alias for stable system (notices must not live here)."""

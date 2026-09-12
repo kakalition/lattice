@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections import OrderedDict
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import ToolSearch
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import AbstractToolset, CombinedToolset, FilteredToolset
 
 from lattice.config import LatticeSettings
@@ -19,7 +21,7 @@ from lattice.deps import (  # noqa: F401 — re-export for existing imports
     truncate_result,
 )
 from lattice.mcp import McpHostManager, should_defer_mcp
-from lattice.mcp.toolset import McpToolset
+from lattice.mcp.toolset import McpToolset, mcp_tool_name
 from lattice.memory import Memory, build_memory
 from lattice.profiles import Profile, merge_tool_policy
 from lattice.prompt import PromptBundle, build_skill_index_xml
@@ -27,6 +29,17 @@ from lattice.providers import build_openai_model
 from lattice.tools.agent import build_toolsets
 
 logger = logging.getLogger("lattice.agent_app")
+
+# Tool definition bytes must stay stable across turns so provider-side cache
+# prefixes survive; rebuilding toolsets per turn reorders MCP schemas. The cache
+# is keyed by every input that changes the schema set and bounded so stale
+# discovery cannot accumulate.
+_TOOLSET_CACHE_MAX = 8
+_toolset_cache: OrderedDict[tuple[Any, ...], AbstractToolset[TurnDeps]] = OrderedDict()
+
+
+def clear_toolset_cache() -> None:
+    _toolset_cache.clear()
 
 
 def build_prompt_bundle(
@@ -57,6 +70,40 @@ def filter_enabled(toolset: AbstractToolset[TurnDeps]) -> AbstractToolset[TurnDe
     return FilteredToolset(toolset, _keep)
 
 
+def _toolset_cache_key(
+    settings: LatticeSettings,
+    mcp: McpHostManager,
+    *,
+    exclude: frozenset[str],
+    filter_policy: bool,
+) -> tuple[Any, ...]:
+    mcp_names = tuple(sorted(mcp_tool_name(i.server, i.name) for i in mcp.enabled_tools()))
+    return (
+        tuple(settings.tools.eager),
+        tuple(settings.tools.cold),
+        frozenset(exclude),
+        mcp_names,
+        str(settings.tools.mcp_defer),
+        settings.tools.mcp_defer_threshold,
+        filter_policy,
+    )
+
+
+def _cached_toolset(
+    key: tuple[Any, ...], factory: Callable[[], AbstractToolset[TurnDeps]]
+) -> AbstractToolset[TurnDeps]:
+    cached = _toolset_cache.get(key)
+    if cached is not None:
+        _toolset_cache.move_to_end(key)
+        return cached
+    built = factory()
+    _toolset_cache[key] = built
+    _toolset_cache.move_to_end(key)
+    while len(_toolset_cache) > _TOOLSET_CACHE_MAX:
+        _toolset_cache.popitem(last=False)
+    return built
+
+
 def build_core_toolset(
     settings: LatticeSettings,
     mcp: McpHostManager,
@@ -64,27 +111,38 @@ def build_core_toolset(
     exclude: frozenset[str] = frozenset(),
     filter_policy: bool = True,
 ) -> AbstractToolset[TurnDeps]:
-    """Tiered core tools (eager + deferred cold), plus discovered MCP tools."""
-    toolsets: list[AbstractToolset[TurnDeps]] = list(
-        build_toolsets(
-            exclude=exclude,
-            eager=settings.tools.eager,
-            cold=settings.tools.cold,
-            defer_cold=True,
+    """Tiered core tools (eager + deferred cold), plus discovered MCP tools.
+
+    The built toolset is cached per schema signature so tool definitions recycle
+    across turns instead of shifting the cacheable prefix. Safe because toolsets
+    are stateless wrappers; per-request policy is still applied by
+    ``filter_enabled`` at call time.
+    """
+    key = _toolset_cache_key(settings, mcp, exclude=exclude, filter_policy=filter_policy)
+
+    def _build() -> AbstractToolset[TurnDeps]:
+        toolsets: list[AbstractToolset[TurnDeps]] = list(
+            build_toolsets(
+                exclude=exclude,
+                eager=settings.tools.eager,
+                cold=settings.tools.cold,
+                defer_cold=True,
+            )
         )
-    )
-    if mcp.enabled_tools():
-        mcp_toolset: AbstractToolset[TurnDeps] = McpToolset(mcp)
-        if should_defer_mcp(mcp, settings.tools):
-            from pydantic_ai.toolsets import DeferredLoadingToolset
+        if mcp.enabled_tools():
+            mcp_toolset: AbstractToolset[TurnDeps] = McpToolset(mcp)
+            if should_defer_mcp(mcp, settings.tools):
+                from pydantic_ai.toolsets import DeferredLoadingToolset
 
-            mcp_toolset = DeferredLoadingToolset(mcp_toolset)
-        toolsets.append(mcp_toolset)
+                mcp_toolset = DeferredLoadingToolset(mcp_toolset)
+            toolsets.append(mcp_toolset)
 
-    combined: AbstractToolset[TurnDeps] = (
-        CombinedToolset(toolsets) if len(toolsets) > 1 else toolsets[0]
-    )
-    return filter_enabled(combined) if filter_policy else combined
+        combined: AbstractToolset[TurnDeps] = (
+            CombinedToolset(toolsets) if len(toolsets) > 1 else toolsets[0]
+        )
+        return filter_enabled(combined) if filter_policy else combined
+
+    return _cached_toolset(key, _build)
 
 
 def tool_search_capability() -> Any:
@@ -107,6 +165,7 @@ def create_agent(
     mcp: McpHostManager | None = None,
     exclude: frozenset[str] = frozenset(),
     toolsets: Sequence[AbstractToolset[TurnDeps]] | None = None,
+    model_settings: ModelSettings | None = None,
 ) -> Agent[TurnDeps, str]:
     from lattice.providers.settings import resolve_model_id
 
@@ -125,6 +184,7 @@ def create_agent(
         system_prompt=system_prompt,
         toolsets=built,
         capabilities=[tool_search_capability()],
+        model_settings=model_settings,
     )
 
 
