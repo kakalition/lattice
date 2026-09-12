@@ -10,7 +10,6 @@ import pytest
 from lattice.config import LatticeSettings, SqliteConfig, SqliteDatabaseConfig
 from lattice.context import PressureConfig, compress
 from lattice.hitl.policies import shell_needs_approval, sql_needs_approval, tool_needs_approval
-from lattice.models import Inbound
 from lattice.profiles import ensure_default_profile, load_profile, merge_tool_policy
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers.errors import FailoverReason, classify_provider_error, recovery_action
@@ -20,7 +19,6 @@ from lattice.setup import init_home, write_skill_starters
 from lattice.skills import scan_skills, skill_index_entries, skill_view
 from lattice.sqlite import SqliteRegistry
 from lattice.tools.file_safety import PathDeniedError, resolve_in_workspace
-from lattice.turn import echo_turn
 
 
 def test_ocr_format_and_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,6 +73,12 @@ def test_resolve_agent_path_skills_and_profiles(tmp_path: Path) -> None:
     assert target == (home / "skills" / "demo" / "SKILL.md").resolve()
     pref = resolve_agent_path("profiles/x/SOUL.md", ws, home=home)
     assert "profiles/x/SOUL.md" in str(pref)
+    tool_rel = resolve_agent_path("tools/greet.yaml", ws, home=home)
+    assert tool_rel == (home / "tools" / "greet.yaml").resolve()
+    tool_abs = resolve_agent_path(str((home / "tools" / "run.py").resolve()), ws, home=home)
+    assert tool_abs == (home / "tools" / "run.py").resolve()
+    with pytest.raises(PathDeniedError):
+        resolve_agent_path("tools/../secret.txt", ws, home=home)
     with pytest.raises(PathDeniedError):
         resolve_agent_path("/etc/passwd", ws, home=home)
 
@@ -122,12 +126,8 @@ def test_shell_approval_patterns() -> None:
     assert not sql_needs_approval("UPDATE t SET name = 'ALTER EGO' WHERE id = 1")
     assert not sql_needs_approval("-- DROP TABLE t\nSELECT 1")
     # Catastrophic / structural ops still gate.
-    assert tool_needs_approval(
-        "sqlite_execute", args={"name": "finances", "sql": "DELETE FROM t"}
-    )
-    assert tool_needs_approval(
-        "sqlite_execute", args={"name": "finances", "sql": "DROP TABLE t"}
-    )
+    assert tool_needs_approval("sqlite_execute", args={"name": "finances", "sql": "DELETE FROM t"})
+    assert tool_needs_approval("sqlite_execute", args={"name": "finances", "sql": "DROP TABLE t"})
     assert sql_needs_approval("ALTER TABLE t ADD COLUMN x INT")
     assert sql_needs_approval("ATTACH DATABASE '/tmp/x.db' AS x")
     assert not tool_needs_approval("read_file")
@@ -327,3 +327,72 @@ def test_ensure_default_profile(tmp_path: Path) -> None:
     ensure_default_profile(tmp_path)
     p = load_profile("default", tmp_path)
     assert p.soul
+
+
+def test_seed_skill_scripts_non_clobber(tmp_path: Path) -> None:
+    from lattice.setup import seed_skill_scripts
+
+    root = init_home(tmp_path)
+    targets = [
+        root / "skills" / "personal-metrics" / "scripts" / "metrics.py",
+        root / "skills" / "scheduling" / "scripts" / "schedule.py",
+        root / "skills" / "sqlite-admin" / "scripts" / "sqlite.py",
+        root / "skills" / "profile-authoring" / "scripts" / "profiles.py",
+        root / "skills" / "profile-authoring" / "scripts" / "profile_remove.py",
+    ]
+    for target in targets:
+        assert target.is_file(), target
+    edited = targets[0]
+    edited.write_text("# operator edit\n", encoding="utf-8")
+    seed_skill_scripts(root)
+    assert edited.read_text(encoding="utf-8") == "# operator edit\n"
+
+
+def test_scan_skills_reports_invalid(tmp_path: Path) -> None:
+    from lattice.skills import scan_skills_report
+
+    def _skill(folder: str, body: str) -> None:
+        path = tmp_path / "skills" / folder / "SKILL.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    _skill("Bad_Name", "---\nname: Bad_Name\ndescription: x\n---\nbody\n")
+    _skill("folder-mismatch", "---\nname: other-name\ndescription: x\n---\nbody\n")
+    _skill("empty-desc", '---\nname: empty-desc\ndescription: "   "\n---\nbody text\n')
+    report = scan_skills_report(tmp_path)
+    assert report.skills == []
+    joined = " | ".join(report.errors)
+    assert "invalid skill name" in joined
+    assert "does not match folder" in joined
+    assert "empty description" in joined
+
+
+def test_skill_view_rescans_same_turn(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from pydantic_ai.toolsets import FunctionToolset
+
+    from lattice.events import NullTurnEvents
+    from lattice.tools.agent.skill_view import register
+
+    root = init_home(tmp_path)
+    write_skill_starters(root)
+    profile = load_profile("default", root)
+    deps = SimpleNamespace(
+        settings=SimpleNamespace(home=tmp_path),
+        profile=profile,
+        events=NullTurnEvents(),
+    )
+    ctx = SimpleNamespace(deps=deps)
+    fn = register(FunctionToolset())["skill_view"]
+
+    assert "skill not found" in asyncio.run(fn(ctx, "temp-note"))
+    skill_dir = root / "skills" / "temp-note"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: temp-note\ndescription: temp\n---\n# Temp\nbody\n",
+        encoding="utf-8",
+    )
+    out = asyncio.run(fn(ctx, "temp-note"))
+    assert "# Skill: temp-note" in out
+    assert "body" in out

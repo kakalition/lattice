@@ -7,9 +7,10 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from lattice.deps import TurnDeps, maybe_approve, traced, truncate_result
-from lattice.tools.agent._common import ToolTier, ToolsetT
+from lattice.tools.agent._common import ToolsetT, ToolTier
 from lattice.tools.file_safety import resolve_agent_path
-from lattice.tools.script import execute_script as _execute_script, format_script_result
+from lattice.tools.script import execute_script as _execute_script
+from lattice.tools.script import format_script_result
 
 TIER = ToolTier.COLD
 
@@ -42,10 +43,12 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
         code: str | None = None,
         path: str | None = None,
         timeout: float = 60.0,
+        args: list[str] | None = None,
     ) -> str:
         """Run a sandboxed local script (python/node/bash) via bwrap when available.
 
         Prefer path under scripts/ for reusable files, or pass inline code.
+        ``args`` are passed to the script as command-line argv.
         HITL only for dangerous patterns (subprocess/rm/network/eval/…).
         Network stays off unless scripts.allow_network is true.
         """
@@ -77,6 +80,7 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
                     workspace=ctx.deps.workspace,
                     home=ctx.deps.settings.home,
                     cfg=ctx.deps.settings.scripts,
+                    argv_extra=args,
                 )
                 return truncate_result(format_script_result(result))
             except Exception as exc:
@@ -85,7 +89,7 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
         return await traced(
             ctx,
             "execute_script",
-            {"language": language, "path": path, "timeout": timeout},
+            {"language": language, "path": path, "timeout": timeout, "args": args},
             _op,
         )
 

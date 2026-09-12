@@ -12,7 +12,7 @@ from pydantic_ai.capabilities import ToolSearch
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import AbstractToolset, CombinedToolset, FilteredToolset
 
-from lattice.config import LatticeSettings
+from lattice.config import LatticeSettings, ToolTier
 from lattice.deps import (  # noqa: F401 — re-export for existing imports
     CORE_TOOL_NAMES,
     TurnDeps,
@@ -26,7 +26,8 @@ from lattice.memory import Memory, build_memory
 from lattice.profiles import Profile, merge_tool_policy
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers import build_openai_model
-from lattice.tools.agent import build_toolsets
+from lattice.tools.agent import build_toolsets, resolve_tier
+from lattice.tools.user_tools import UserToolset, UserToolSpec
 
 logger = logging.getLogger("lattice.agent_app")
 
@@ -76,8 +77,10 @@ def _toolset_cache_key(
     *,
     exclude: frozenset[str],
     filter_policy: bool,
+    user_tools: Sequence[UserToolSpec] = (),
 ) -> tuple[Any, ...]:
     mcp_names = tuple(sorted(mcp_tool_name(i.server, i.name) for i in mcp.enabled_tools()))
+    user_key = tuple(sorted(f"{spec.name}:{spec.digest}" for spec in user_tools))
     return (
         tuple(settings.tools.eager),
         tuple(settings.tools.cold),
@@ -86,6 +89,7 @@ def _toolset_cache_key(
         str(settings.tools.mcp_defer),
         settings.tools.mcp_defer_threshold,
         filter_policy,
+        user_key,
     )
 
 
@@ -104,23 +108,39 @@ def _cached_toolset(
     return built
 
 
+def _user_tool_tier(settings: LatticeSettings, spec: UserToolSpec) -> ToolTier:
+    """User tools default EAGER; ``tools.cold``/``tools.eager`` globs override."""
+    return resolve_tier(
+        spec.name,
+        eager=settings.tools.eager,
+        cold=settings.tools.cold,
+        default=ToolTier.EAGER,
+    )
+
+
 def build_core_toolset(
     settings: LatticeSettings,
     mcp: McpHostManager,
     *,
     exclude: frozenset[str] = frozenset(),
     filter_policy: bool = True,
+    user_tools: Sequence[UserToolSpec] = (),
 ) -> AbstractToolset[TurnDeps]:
-    """Tiered core tools (eager + deferred cold), plus discovered MCP tools.
+    """Tiered core tools (eager + deferred cold), plus user tools and MCP tools.
 
     The built toolset is cached per schema signature so tool definitions recycle
     across turns instead of shifting the cacheable prefix. Safe because toolsets
     are stateless wrappers; per-request policy is still applied by
     ``filter_enabled`` at call time.
     """
-    key = _toolset_cache_key(settings, mcp, exclude=exclude, filter_policy=filter_policy)
+    specs = list(user_tools)
+    key = _toolset_cache_key(
+        settings, mcp, exclude=exclude, filter_policy=filter_policy, user_tools=specs
+    )
 
     def _build() -> AbstractToolset[TurnDeps]:
+        from pydantic_ai.toolsets import DeferredLoadingToolset
+
         toolsets: list[AbstractToolset[TurnDeps]] = list(
             build_toolsets(
                 exclude=exclude,
@@ -129,11 +149,16 @@ def build_core_toolset(
                 defer_cold=True,
             )
         )
+        if specs:
+            eager_specs = [s for s in specs if _user_tool_tier(settings, s) is ToolTier.EAGER]
+            cold_specs = [s for s in specs if _user_tool_tier(settings, s) is ToolTier.COLD]
+            if eager_specs:
+                toolsets.append(UserToolset(eager_specs))
+            if cold_specs:
+                toolsets.append(DeferredLoadingToolset(UserToolset(cold_specs)))
         if mcp.enabled_tools():
             mcp_toolset: AbstractToolset[TurnDeps] = McpToolset(mcp)
             if should_defer_mcp(mcp, settings.tools):
-                from pydantic_ai.toolsets import DeferredLoadingToolset
-
                 mcp_toolset = DeferredLoadingToolset(mcp_toolset)
             toolsets.append(mcp_toolset)
 
@@ -165,6 +190,7 @@ def create_agent(
     mcp: McpHostManager | None = None,
     exclude: frozenset[str] = frozenset(),
     toolsets: Sequence[AbstractToolset[TurnDeps]] | None = None,
+    user_tools: Sequence[UserToolSpec] = (),
     model_settings: ModelSettings | None = None,
 ) -> Agent[TurnDeps, str]:
     from lattice.providers.settings import resolve_model_id
@@ -176,7 +202,14 @@ def create_agent(
     built = (
         list(toolsets)
         if toolsets is not None
-        else [build_core_toolset(settings, mcp or McpHostManager(), exclude=exclude)]
+        else [
+            build_core_toolset(
+                settings,
+                mcp or McpHostManager(),
+                exclude=exclude,
+                user_tools=user_tools,
+            )
+        ]
     )
     return Agent(
         resolved,
@@ -194,10 +227,11 @@ def resolve_enabled_tools(
     *,
     channel: str,
     mcp: McpHostManager,
+    extra_tools: Sequence[str] = (),
 ) -> list[str]:
     channel_cfg = settings.telegram.tools if channel == "telegram" else settings.tools
     return merge_tool_policy(
-        list(CORE_TOOL_NAMES),
+        [*CORE_TOOL_NAMES, *extra_tools],
         profile_allow=profile.tools_allow,
         profile_deny=profile.tools_deny,
         channel_allow=channel_cfg.allow if hasattr(channel_cfg, "allow") else settings.tools.allow,

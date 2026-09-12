@@ -47,9 +47,10 @@ from lattice.providers.usage import usage_to_dict
 from lattice.runtime import set_cwd
 from lattice.session import SessionStore, sanitize_messages
 from lattice.session_history import session_dicts_to_history
-from lattice.skills import scan_skills, skill_index_entries
+from lattice.skills import scan_skills_for, skill_index_entries
 from lattice.sqlite import SqlitePool, SqliteRegistry
 from lattice.tools.deadline import with_deadline
+from lattice.tools.user_tools import scan_user_tools
 from lattice.turn_trace import LoggingTurnEvents, new_turn_id
 
 
@@ -104,17 +105,21 @@ async def run_turn(
     existing = await store.get(session_id)
     messages: list[dict[str, Any]] = sanitize_messages(existing["messages"] if existing else [])
 
-    extra_dirs = []
-    if profile.root and (profile.root / "skills").is_dir():
-        extra_dirs.append(profile.root / "skills")
-    skills = scan_skills(settings.home, extra_dirs=extra_dirs)
+    notices: list[str] = []
+    skill_report = scan_skills_for(settings.home, profile)
+    skills = skill_report.skills
+    for err in skill_report.errors:
+        notices.append(f"[notice] {err}")
     entries = skill_index_entries(
         skills, prefer=profile.skills_prefer, disable=profile.skills_disable
     )
+    user_tools = scan_user_tools(settings.home)
+    for err in user_tools.errors:
+        notices.append(f"[notice] {err}")
+    user_specs = user_tools.specs
 
     memory = build_memory_for_profile(settings, profile)
     prefetch = await memory.search(inbound.text, limit=5)
-    notices: list[str] = []
     if prefetch:
         notices.append("Relevant memories:\n" + "\n".join(f"- {h.get('text')}" for h in prefetch))
 
@@ -153,7 +158,13 @@ async def run_turn(
 
     registry = SqliteRegistry(settings)
     pool = SqlitePool(registry)
-    enabled = resolve_enabled_tools(settings, profile, channel=inbound.channel, mcp=mcp)
+    enabled = resolve_enabled_tools(
+        settings,
+        profile,
+        channel=inbound.channel,
+        mcp=mcp,
+        extra_tools=[spec.name for spec in user_specs],
+    )
 
     user_content = inbound.text
     if inbound.steer_text:
@@ -161,8 +172,7 @@ async def run_turn(
     if inbound.media_paths:
         paths = ", ".join(str(p) for p in inbound.media_paths)
         user_content = (
-            f"{user_content}\n\n[media] {paths}\n"
-            "(Use the ocr tool on image paths to extract text.)"
+            f"{user_content}\n\n[media] {paths}\n(Use the ocr tool on image paths to extract text.)"
         )
 
     preamble = prompt.user_volatile_preamble()
@@ -220,6 +230,7 @@ async def run_turn(
         workspace=workspace,
         enabled_tools=enabled,
         skills=skills,
+        user_tools=user_specs,
         user_id=inbound.user_id,
         channel=inbound.channel,
         cooldown=FallbackCooldown(),
@@ -234,6 +245,7 @@ async def run_turn(
         system_prompt=system_prompt,
         model=model_obj,
         mcp=mcp,
+        user_tools=user_specs,
         model_settings=cache_settings,
     )
 
@@ -257,6 +269,7 @@ async def run_turn(
                 system_prompt=system_prompt,
                 model=override_model,
                 mcp=mcp,
+                user_tools=user_specs,
                 model_settings=cast(
                     ModelSettings,
                     {

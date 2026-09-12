@@ -109,7 +109,14 @@ async def _secondary_once(
         agent = get_secondary_agent(settings, model_id=model_id, system_prompt=system_prompt)
     # Same capability surface as the primary, minus the dispatch entry. The
     # primary's policy remains the ceiling and is applied by the deps-driven filter.
-    toolsets = [build_core_toolset(settings, deps.mcp, exclude=frozenset({"delegate"}))]
+    toolsets = [
+        build_core_toolset(
+            settings,
+            deps.mcp,
+            exclude=frozenset({"delegate"}),
+            user_tools=deps.user_tools,
+        )
+    ]
 
     secondary_deps = TD(
         settings=deps.settings,
@@ -129,6 +136,7 @@ async def _secondary_once(
         # The primary's policy is the ceiling; `delegate` never propagates.
         enabled_tools=[n for n in deps.enabled_tools if n != "delegate"],
         skills=deps.skills,
+        user_tools=deps.user_tools,
         user_id=deps.user_id,
         channel=deps.channel,
         cooldown=deps.cooldown,

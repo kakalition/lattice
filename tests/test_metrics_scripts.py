@@ -9,7 +9,6 @@ import pytest
 from lattice.config import ScriptsConfig
 from lattice.deps import CORE_TOOL_NAMES
 from lattice.hitl.policies import tool_needs_approval
-from lattice.tools.agent import tool_functions
 from lattice.tools.metrics import metric_log, metric_query
 from lattice.tools.script import (
     build_bwrap_command,
@@ -123,6 +122,57 @@ def test_build_bwrap_command_includes_unshare_net() -> None:
     assert "--unshare-net" in cmd
     soft = build_soft_command(interpreter="/usr/bin/python3", script_path=Path("/tmp/x.py"))
     assert soft[0] == "/usr/bin/python3"
+
+
+def test_build_bwrap_command_binds_skill_and_tool_trees(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / "skills").mkdir(parents=True)
+    (home / "tools").mkdir(parents=True)
+    common = {
+        "interpreter": "/usr/bin/python3",
+        "script_path": tmp_path / "x.py",
+        "workspace": tmp_path,
+        "scripts_root": home / "scripts",
+        "allow_network": False,
+    }
+    cmds = [
+        build_bwrap_command(**common, extra_ro_binds=[home / "skills", home / "tools"]),
+        build_bwrap_command(**common, home=home),
+    ]
+    for cmd in cmds:
+        for tree in (home / "skills", home / "tools"):
+            resolved = str(tree.resolve())
+            assert resolved in cmd
+            # Read-only: never exposed writable via --bind.
+            idx = cmd.index(resolved)
+            assert cmd[idx - 1] == "--ro-bind"
+            assert ["--bind", resolved, resolved] != cmd[idx - 1 : idx + 2]
+
+
+@pytest.mark.asyncio
+async def test_execute_script_passes_stdin_and_env(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    code = (
+        "import json, os, sys\n"
+        "print('stdin', sys.stdin.read().strip())\n"
+        "print('env', os.environ.get('LATTICE_TEST_ENV', ''))\n"
+    )
+    result = await execute_script(
+        language="python",
+        code=code,
+        workspace=workspace,
+        home=home,
+        cfg=ScriptsConfig(),
+        timeout=15,
+        stdin='{"a": 1}',
+        env_extra={"LATTICE_TEST_ENV": "from-env"},
+    )
+    assert result.exit_code == 0
+    assert 'stdin {"a": 1}' in result.stdout
+    assert "env from-env" in result.stdout
 
 
 def test_new_skill_starters_present() -> None:

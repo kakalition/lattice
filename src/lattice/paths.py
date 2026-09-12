@@ -111,6 +111,7 @@ def ensure_home() -> Path:
         "browser/profile",
         "metrics",
         "scripts",
+        "tools",
     ):
         (home / sub).mkdir(parents=True, exist_ok=True)
     return home

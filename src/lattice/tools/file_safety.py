@@ -19,7 +19,7 @@ DENY_NAME_PARTS = (
 )
 
 # First path segment → writable under lattice_home (channel authoring)
-HOME_PREFIXES = frozenset({"skills", "profiles", "scripts"})
+HOME_PREFIXES = frozenset({"skills", "profiles", "scripts", "tools"})
 
 
 class PathDeniedError(PermissionError):
@@ -72,13 +72,19 @@ def resolve_agent_path(path: str | Path, workspace: Path, *, home: Path) -> Path
 
     if raw.is_absolute():
         resolved = raw.resolve()
-        for root in (workspace, home / "skills", home / "profiles", home / "scripts"):
+        for root in (
+            workspace,
+            home / "skills",
+            home / "profiles",
+            home / "scripts",
+            home / "tools",
+        ):
             try:
                 resolved.relative_to(root.resolve())
                 _assert_not_denied(resolved)
                 return resolved
             except ValueError:
                 continue
-        raise PathDeniedError(f"path outside workspace/skills/profiles/scripts: {resolved}")
+        raise PathDeniedError(f"path outside workspace/skills/profiles/scripts/tools: {resolved}")
 
     return resolve_in_workspace(path, workspace)

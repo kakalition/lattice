@@ -92,6 +92,7 @@ class TurnDeps(BaseModel):
     consecutive_denials: int = 0
     enabled_tools: list[str] = Field(default_factory=list)
     skills: list = Field(default_factory=list)
+    user_tools: list = Field(default_factory=list)
     user_id: str = "local"
     channel: str = "cli"
     cooldown: FallbackCooldown = Field(default_factory=FallbackCooldown)
@@ -129,9 +130,16 @@ async def traced(
 
 
 async def maybe_approve(
-    ctx: RunContext[TurnDeps], tool_name: str, summary: str, **args: Any
+    ctx: RunContext[TurnDeps],
+    tool_name: str,
+    summary: str,
+    *,
+    needs: bool | None = None,
+    **args: Any,
 ) -> str | None:
-    if not tool_needs_approval(tool_name, args=args):
+    if needs is None:
+        needs = tool_needs_approval(tool_name, args=args)
+    if not needs:
         return None
     key = f"{tool_name}:{summary}"
     if key in ctx.deps.approval_memory:

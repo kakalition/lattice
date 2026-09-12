@@ -92,6 +92,8 @@ def build_bwrap_command(
     scripts_root: Path,
     allow_network: bool,
     argv_extra: list[str] | None = None,
+    extra_ro_binds: list[Path] | None = None,
+    home: Path | None = None,
 ) -> list[str]:
     cmd: list[str] = ["bwrap", "--die-with-parent", "--new-session"]
     if not allow_network:
@@ -109,6 +111,18 @@ def build_bwrap_command(
     interp = str(Path(interpreter).resolve())
     if not any(interp.startswith(b.rstrip("/") + "/") or interp == b for b in bound):
         cmd.extend(["--ro-bind", interp, interp])
+
+    # Skill/tool trees are readable (not writable) inside the sandbox so
+    # script-backed handlers under skills/<name>/scripts/ resolve on Linux.
+    extra_binds: list[Path] = list(extra_ro_binds or [])
+    if home is not None:
+        extra_binds.extend([home / "skills", home / "tools"])
+    for extra in extra_binds:
+        resolved = str(Path(extra).expanduser().resolve())
+        if resolved in bound or not Path(resolved).is_dir():
+            continue
+        cmd.extend(["--ro-bind", resolved, resolved])
+        bound.add(resolved)
 
     cmd.extend(
         [
@@ -148,6 +162,8 @@ async def execute_script(
     home: Path | None = None,
     cfg: ScriptsConfig | None = None,
     argv_extra: list[str] | None = None,
+    stdin: str | None = None,
+    env_extra: dict[str, str] | None = None,
 ) -> ScriptResult:
     cfg = cfg or ScriptsConfig()
     language = (language or "").strip().lower()
@@ -201,6 +217,7 @@ async def execute_script(
             scripts_root=scripts_root,
             allow_network=cfg.allow_network,
             argv_extra=argv_extra,
+            home=home,
         )
         sandbox = "bwrap"
     else:
@@ -217,12 +234,15 @@ async def execute_script(
         "LATTICE_SCRIPTS": str(scripts_root),
         "LATTICE_WORKSPACE": str(workspace.resolve()),
     }
+    if env_extra:
+        env.update({str(k): str(v) for k, v in env_extra.items()})
     (scripts_root / ".home").mkdir(parents=True, exist_ok=True)
     (scripts_root / ".tmp").mkdir(parents=True, exist_ok=True)
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE if stdin is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(workspace.resolve()),
@@ -231,7 +251,9 @@ async def execute_script(
         )
 
         async def _wait() -> ScriptResult:
-            out_b, err_b = await proc.communicate()
+            out_b, err_b = await proc.communicate(
+                input=stdin.encode("utf-8") if stdin is not None else None
+            )
             return ScriptResult(
                 exit_code=proc.returncode or 0,
                 stdout=out_b.decode("utf-8", errors="replace")[:50_000],

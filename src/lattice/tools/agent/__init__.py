@@ -112,12 +112,20 @@ def _matches(name: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(name, pat) for pat in patterns)
 
 
-def resolve_tier(name: str, *, eager: list[str], cold: list[str]) -> ToolTier:
-    """Config globs override the module default; ``cold`` wins on conflict."""
+def resolve_tier(
+    name: str, *, eager: list[str], cold: list[str], default: ToolTier | None = None
+) -> ToolTier:
+    """Config globs override the module default; ``cold`` wins on conflict.
+
+    ``default`` is used for names with no module (e.g. runtime user tools); when
+    omitted, the module's declared ``TIER`` is used.
+    """
     if _matches(name, cold):
         return ToolTier.COLD
     if _matches(name, eager):
         return ToolTier.EAGER
+    if default is not None:
+        return default
     return _default_tiers()[name]
 
 
@@ -183,7 +191,5 @@ def build_toolsets(
 
     out: list[AbstractToolset[Any]] = [eager_toolset]
     if cold_toolset.tools:
-        out.append(
-            DeferredLoadingToolset(cold_toolset) if defer_cold else cold_toolset
-        )
+        out.append(DeferredLoadingToolset(cold_toolset) if defer_cold else cold_toolset)
     return out
