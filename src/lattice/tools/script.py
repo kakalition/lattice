@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import tempfile
@@ -306,12 +307,17 @@ async def execute_script(
 
         try:
             return await with_deadline(_wait(), seconds=timeout, label="execute_script")
-        except TimeoutError:
-            try:
-                os.killpg(proc.pid, 9)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.kill()
-            raise
+        finally:
+            # Kill the process group on timeout, outer cancel, or error so a
+            # cancelled turn cannot orphan start_new_session=True children.
+            if proc.returncode is None:
+                try:
+                    os.killpg(proc.pid, 9)
+                except (ProcessLookupError, PermissionError, OSError):
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        proc.kill()
+                with contextlib.suppress(BaseException):
+                    await proc.wait()
     finally:
         if cleanup is not None:
             cleanup.unlink(missing_ok=True)

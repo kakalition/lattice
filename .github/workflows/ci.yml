@@ -21,6 +21,8 @@ jobs:
         run: uv run ruff format --check src tests
       - name: Pytest (unit)
         run: uv run pytest -q
+      - name: Pytest eval (offline replay, no secrets)
+        run: uv run pytest -q -m eval
       - name: Pytest integration (optional)
         if: ${{ secrets.OPENROUTER_API_KEY != '' }}
         env:

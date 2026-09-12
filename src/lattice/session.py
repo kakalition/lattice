@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,29 @@ from lattice.paths import lattice_home
 from lattice.sqlite.pragmas import apply_perf_pragmas
 
 _LOCK = asyncio.Lock()
+# Per-session locks serialize read-modify-write of a session blob so two
+# concurrent turns cannot clobber each other's messages/actions.
+_LOCKS_GUARD = threading.Lock()
+_session_locks: dict[str, asyncio.Lock] = {}
+
+
+def _session_lock(session_id: str) -> asyncio.Lock:
+    with _LOCKS_GUARD:
+        lock = _session_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _session_locks[session_id] = lock
+        return lock
+
+
+async def _ensure_column(
+    conn: aiosqlite.Connection, table: str, column: str, declaration: str
+) -> None:
+    """Idempotent ``ALTER TABLE`` guarded by ``PRAGMA table_info``."""
+    cur = await conn.execute(f"PRAGMA table_info({table})")
+    rows = await cur.fetchall()
+    if column not in {row[1] for row in rows}:
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 class SessionStore:
@@ -36,11 +60,13 @@ class SessionStore:
                 title TEXT,
                 messages_json TEXT NOT NULL DEFAULT '[]',
                 usage_json TEXT NOT NULL DEFAULT '{}',
+                actions_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        await _ensure_column(conn, "sessions", "actions_json", "TEXT NOT NULL DEFAULT '[]'")
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sticky_profiles (
@@ -109,6 +135,7 @@ class SessionStore:
             data = dict(row)
             data["messages"] = json.loads(data.pop("messages_json") or "[]")
             data["usage"] = json.loads(data.pop("usage_json") or "{}")
+            data["actions"] = json.loads(data.pop("actions_json") or "[]")
             return data
         finally:
             await conn.close()
@@ -121,7 +148,7 @@ class SessionStore:
         usage: dict[str, Any] | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat()
-        async with _LOCK:
+        async with _session_lock(session_id), _LOCK:
             conn = await self.connect()
             try:
                 await conn.execute(
@@ -136,6 +163,78 @@ class SessionStore:
                         now,
                         session_id,
                     ),
+                )
+                await conn.commit()
+            finally:
+                await conn.close()
+
+    async def append_message(
+        self,
+        session_id: str,
+        message: dict[str, Any],
+        *,
+        usage: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Atomically read-modify-write one message under the per-session lock.
+
+        Returns the full post-append message list. Two concurrent appends both
+        survive instead of one clobbering the other's blob.
+        """
+        now = datetime.now(UTC).isoformat()
+        async with _session_lock(session_id), _LOCK:
+            conn = await self.connect()
+            try:
+                conn.row_factory = aiosqlite.Row
+                cur = await conn.execute(
+                    "SELECT messages_json FROM sessions WHERE id = ?", (session_id,)
+                )
+                row = await cur.fetchone()
+                messages = json.loads(row["messages_json"]) if row and row["messages_json"] else []
+                messages.append(message)
+                await conn.execute(
+                    """
+                    UPDATE sessions
+                    SET messages_json = ?, usage_json = COALESCE(?, usage_json), updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(messages, ensure_ascii=False),
+                        json.dumps(usage or {}, ensure_ascii=False) if usage is not None else None,
+                        now,
+                        session_id,
+                    ),
+                )
+                await conn.commit()
+                return messages
+            finally:
+                await conn.close()
+
+    async def append_actions(
+        self,
+        session_id: str,
+        new: list[Any],
+        *,
+        max_keep: int = 20,
+    ) -> None:
+        """Append bounded action-ledger records (oldest dropped)."""
+        if not new:
+            return
+        now = datetime.now(UTC).isoformat()
+        payload = [item.model_dump() if hasattr(item, "model_dump") else dict(item) for item in new]
+        async with _session_lock(session_id), _LOCK:
+            conn = await self.connect()
+            try:
+                conn.row_factory = aiosqlite.Row
+                cur = await conn.execute(
+                    "SELECT actions_json FROM sessions WHERE id = ?", (session_id,)
+                )
+                row = await cur.fetchone()
+                existing = json.loads(row["actions_json"]) if row and row["actions_json"] else []
+                existing.extend(payload)
+                existing = existing[-max_keep:]
+                await conn.execute(
+                    "UPDATE sessions SET actions_json = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(existing, ensure_ascii=False), now, session_id),
                 )
                 await conn.commit()
             finally:

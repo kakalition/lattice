@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lattice.paths import lattice_home, project_root, user_config_path
@@ -84,6 +84,15 @@ class MemoryConfig(BaseModel):
     # Verify the memory round-trip at boot (write a private token, search it back).
     # Costs one embedding and no LLM call, which is why it is on by default.
     self_check: bool = True
+    # Bound each background memory job so one hung write cannot starve the queue.
+    sync_timeout_seconds: int = 60
+
+
+class ObservabilityConfig(BaseModel):
+    """Structured telemetry beside the human log."""
+
+    # Append one JSON line per turn to <home>/logs/turns.jsonl.
+    turn_record: bool = True
 
 
 class AgentConfig(BaseModel):
@@ -93,11 +102,31 @@ class AgentConfig(BaseModel):
     hitl_timeout_seconds: int = 600
     context_pressure_ratio: float = 0.5
     protect_last_n: int = 20
+    # Total wall-clock deadline for a turn. Retained under the legacy name so
+    # existing lattice.yaml files keep working; ``turn_timeout_seconds`` is the
+    # intended spelling and is accepted as an input alias.
     idle_watchdog_seconds: int = 600
+    # Per-model-request timeout applied via ModelSettings (provider permitting).
+    request_timeout_seconds: int = 120
     # Explicit prompt caching for capable OpenRouter models (Anthropic/Gemini).
     # No-op for providers without explicit cache control (OpenAI/DeepSeek auto-cache).
     prompt_cache: bool = True
     prompt_cache_ttl: Literal["5m", "1h"] = "5m"
+
+    @property
+    def turn_timeout_seconds(self) -> int:
+        return self.idle_watchdog_seconds
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_turn_timeout(cls, data: Any) -> Any:
+        if (
+            isinstance(data, dict)
+            and "turn_timeout_seconds" in data
+            and "idle_watchdog_seconds" not in data
+        ):
+            data = {**data, "idle_watchdog_seconds": data["turn_timeout_seconds"]}
+        return data
 
 
 class ProviderConfig(BaseModel):
@@ -144,6 +173,7 @@ class LatticeSettings(BaseSettings):
 
     home: Path = Field(default_factory=lattice_home)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
@@ -299,9 +329,17 @@ agent:
   iteration_budget: 60
   hitl_timeout_seconds: 600
   workspace: null
+  # Total turn deadline; the legacy alias `idle_watchdog_seconds` still works.
+  turn_timeout_seconds: 600
+  # Per-model-request timeout (provider permitting).
+  request_timeout_seconds: 120
   # Explicit prompt caching for OpenRouter Anthropic/Gemini models.
   # prompt_cache: true
   # prompt_cache_ttl: 5m   # 5m | 1h (1h is Anthropic-only)
+
+observability:
+  # Append one structured JSON line per turn to <home>/logs/turns.jsonl.
+  turn_record: true
 
 memory:
   # Run mem0's LLM fact-extraction on every turn. Off (default) stores the turn
@@ -311,6 +349,8 @@ memory:
   is_reasoning_model: null
   # Verify the memory round-trip at boot (embedding only, no LLM).
   self_check: true
+  # Bound each background memory write so a hung job cannot starve the queue.
+  sync_timeout_seconds: 60
 
 tools:
   allow: ["*"]

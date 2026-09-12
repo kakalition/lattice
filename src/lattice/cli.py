@@ -24,6 +24,8 @@ from lattice.setup import doctor_report, init_home
 from lattice.turn import echo_turn, run_turn
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Lattice personal agent")
+eval_app = typer.Typer(no_args_is_help=True, help="Offline eval + replay (no secrets)")
+app.add_typer(eval_app, name="eval")
 console = Console()
 logger = logging.getLogger("lattice.cli")
 
@@ -202,7 +204,9 @@ def chat(
                 console.print("[yellow]No API key — using echo mode. Set OPENAI_API_KEY.[/]")
             return await echo_turn(inbound)
         hitl = CliHitlAdapter(timeout_seconds=settings.agent.hitl_timeout_seconds)
-        return await run_turn(inbound, settings=settings, hitl=hitl)
+        return await run_turn(
+            inbound, settings=settings, hitl=hitl, cancel_event=inbound.cancel_event
+        )
 
     if tui:
         from lattice.channel.cli.tui import run_tui
@@ -220,6 +224,72 @@ def chat(
         _run(adapter.run(handler))
     finally:
         _drain_memory()
+
+
+@eval_app.command("run")
+def eval_run(
+    corpus: Path | None = typer.Option(
+        None, "--corpus", help="Corpus directory (default tests/eval/corpus)"
+    ),
+    json_out: Path | None = typer.Option(
+        None, "--json", help="Report path (default <home>/evals/<ts>.json)"
+    ),
+    home: Path | None = typer.Option(None, help="Override Lattice home"),
+) -> None:
+    """Replay the corpus through production run_turn; exit non-zero on failure."""
+    from datetime import UTC, datetime
+
+    from lattice.eval.runner import run_eval
+    from lattice.paths import project_root
+
+    settings = load_settings(home)
+    init_home(settings.home)
+    corpus_dir = corpus or (project_root() / "tests" / "eval" / "corpus")
+    if not corpus_dir.is_dir():
+        console.print(f"[red]corpus directory not found:[/] {corpus_dir}")
+        raise typer.Exit(1)
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    output = json_out or (settings.home / "evals" / f"{ts}.json")
+    report = _run(run_eval(corpus_dir, home=settings.home, output=output))
+    for row in report.rows:
+        status = "skip" if row.skipped else ("pass" if row.passed else "FAIL")
+        color = {"pass": "green", "FAIL": "red", "skip": "yellow"}[status]
+        console.print(f"[{color}]{status}[/] {row.id} tools={row.tools} drift={row.prompt_drift}")
+        if not row.passed and not row.skipped:
+            for assertion in row.assertions:
+                if not assertion.passed:
+                    console.print(f"    [red]x[/] {assertion.name}: {assertion.detail}")
+    console.print(
+        f"passed={report.passed} failed={report.failed} skipped={report.skipped} → {output}"
+    )
+    if report.failed:
+        raise typer.Exit(1)
+
+
+@eval_app.command("mine")
+def eval_mine(
+    log: Path | None = typer.Option(None, "--log", help="Path to lattice.log"),
+    audit: Path | None = typer.Option(None, "--audit", help="Path to audit.jsonl"),
+    out: Path | None = typer.Option(None, "--out", help="Corpus directory to write"),
+    home: Path | None = typer.Option(None, help="Override Lattice home"),
+    limit: int | None = typer.Option(None, "--limit", help="Max rows to mine"),
+) -> None:
+    """Mine draft corpus rows from a real log (plus shell commands from audit)."""
+    from lattice.eval.corpus import dump_corpus, mine_log, mine_shell_commands
+
+    root = home or lattice_home()
+    log_path = log or (root / "logs" / "lattice.log")
+    audit_path = audit or (root / "audit.jsonl")
+    out_dir = out or (root / "eval-corpus")
+    rows = mine_log(log_path, limit=limit)
+    dump_corpus(rows, out_dir / "mined.jsonl")
+    commands = mine_shell_commands(audit_path)
+    if commands:
+        (out_dir / "shell-guard.txt").write_text("\n".join(commands), encoding="utf-8")
+    console.print(
+        f"mined {len(rows)} draft row(s) → {out_dir / 'mined.jsonl'} "
+        f"({len(commands)} shell command(s) → shell-guard.txt)"
+    )
 
 
 @app.command()
@@ -253,7 +323,13 @@ def gateway(
         if not resolve_api_key(settings):
             return await echo_turn(inbound)
         local_hitl = hitl if inbound.channel == "telegram" else AutoApproveHitl(approve_all=False)
-        return await run_turn(inbound, settings=settings, hitl=local_hitl, session_store=store)
+        return await run_turn(
+            inbound,
+            settings=settings,
+            hitl=local_hitl,
+            session_store=store,
+            cancel_event=inbound.cancel_event,
+        )
 
     async def send_fn(channel: str, outbound: Outbound) -> None:
         if channel == "telegram":

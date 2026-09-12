@@ -111,3 +111,53 @@ async def test_flush_drains_queue() -> None:
     assert pending_jobs() >= 1
     await flush_memory(timeout=5.0)
     assert pending_jobs() == 0
+
+
+class HungMemory(SlowMemory):
+    def __init__(self) -> None:
+        super().__init__(delay=0.0)
+
+    async def sync_turn(self, messages: list[dict[str, Any]]) -> None:
+        await asyncio.sleep(3600)
+
+
+@pytest.mark.asyncio
+async def test_hung_job_times_out_and_next_job_runs() -> None:
+    hung = HungMemory()
+    normal = SlowMemory(delay=0.01)
+    enqueue_sync(hung, [{"role": "user", "content": "a"}], timeout=0.15)  # type: ignore[arg-type]
+    enqueue_sync(normal, [{"role": "user", "content": "b"}], timeout=5.0)  # type: ignore[arg-type]
+    await flush_memory(timeout=5.0)
+    assert normal.synced, "a timed-out job must not starve the queue"
+
+
+def test_sync_path_counts_inflight() -> None:
+    class PendingProbe:
+        def __init__(self) -> None:
+            self.seen: int | None = None
+
+        async def sync_turn(self, messages: list[dict[str, Any]]) -> None:
+            self.seen = pending_jobs()
+
+    probe = PendingProbe()
+    # No running loop -> synchronous inline path.
+    enqueue_sync(probe, [{"role": "user", "content": "x"}], timeout=2.0)  # type: ignore[arg-type]
+    assert probe.seen == 1
+    assert pending_jobs() == 0
+
+
+@pytest.mark.asyncio
+async def test_no_fabricated_memory_id() -> None:
+    from lattice.memory import InMemoryMemory
+    from lattice.memory.mem0_qdrant import Mem0QdrantMemory
+
+    class FakeMem0:
+        def add(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {"results": []}
+
+    memory = object.__new__(Mem0QdrantMemory)
+    memory.collection = "c"
+    memory._memory = FakeMem0()
+    memory._fallback = InMemoryMemory("c")
+    memory._extract_on_turn = False
+    assert await memory.add("hello") == ""

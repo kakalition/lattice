@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import sys
 from pathlib import Path
 
@@ -37,11 +38,19 @@ def setup_logging(
         return log_file
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(level)
     if force:
         for h in list(root_logger.handlers):
             root_logger.removeHandler(h)
             h.close()
+
+    # Escape hatch for tests / embedded use: never touch the real log file.
+    if os.environ.get("LATTICE_LOG_DISABLE"):
+        root_logger.setLevel(logging.CRITICAL + 1)
+        root_logger.addHandler(logging.NullHandler())
+        _CONFIGURED = True
+        return log_file
+
+    root_logger.setLevel(level)
 
     fmt = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
 

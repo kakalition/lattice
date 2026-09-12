@@ -50,3 +50,45 @@ async def test_logging_turn_events_reports_phase_timings(caplog) -> None:
         )
     text = "\n".join(r.message for r in caplog.records)
     assert "executor_ms=" in text
+
+
+@pytest.mark.asyncio
+async def test_logging_turn_events_tool_durations_and_ttft(caplog) -> None:
+    trace = LoggingTurnEvents("tools123")
+    with caplog.at_level(logging.INFO, logger="lattice.turn"):
+        await trace.on_tool_start("read_file", {"path": "a.py"})
+        await trace.on_tool_end("read_file", "contents")
+        await trace.on_stream_delta("hi")
+        await trace.on_stream_delta(" there")
+        trace.log_end(outbound_text="done", outcome="completed", retries=2)
+    assert len(trace.tools) == 1
+    assert trace.tools[0].name == "read_file"
+    assert trace.tools[0].ok is True
+    assert trace.ttft_ms is not None
+    assert trace.stream_chunks == 2
+    text = "\n".join(r.message for r in caplog.records)
+    assert "tool_ms=" in text
+    assert "outcome=completed" in text
+    assert "retries=2" in text
+    assert "ttft_ms=" in text
+
+
+@pytest.mark.asyncio
+async def test_logging_turn_events_marks_failed_tools(caplog) -> None:
+    trace = LoggingTurnEvents("fail123")
+    with caplog.at_level(logging.INFO, logger="lattice.turn"):
+        await trace.on_tool_start("shell", {"command": "rm -rf /"})
+        await trace.on_tool_end("shell", "denied: user said no")
+    assert trace.tools[0].ok is False
+
+
+@pytest.mark.asyncio
+async def test_logging_turn_events_adds_cost_to_usage_line(caplog) -> None:
+    trace = LoggingTurnEvents("cost123")
+    with caplog.at_level(logging.INFO, logger="lattice.turn"):
+        trace.log_end(
+            outbound_text="done",
+            usage={"model": "m", "cost": 0.00123, "requests": 2},
+        )
+    text = "\n".join(r.message for r in caplog.records)
+    assert "cost=0.001230" in text

@@ -24,6 +24,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from lattice.tools.deadline import with_deadline
+
 if TYPE_CHECKING:
     from lattice.memory.base import Memory
 
@@ -31,6 +33,8 @@ logger = logging.getLogger("lattice.memory.worker")
 
 # Total flush budget on shutdown; small enough not to hang a service stop.
 DEFAULT_FLUSH_TIMEOUT_S = 5.0
+# Per-job bound so one hung write cannot starve the queue.
+DEFAULT_SYNC_TIMEOUT_S = 60.0
 
 
 @dataclass
@@ -38,6 +42,7 @@ class _Job:
     memory: Memory
     messages: list[dict[str, Any]]
     turn_id: str | None = None
+    timeout: float = DEFAULT_SYNC_TIMEOUT_S
     enqueued: float = field(default_factory=time.monotonic)
 
 
@@ -100,9 +105,15 @@ async def _run(job: _Job) -> None:
     global _inflight
     started = time.monotonic()
     try:
-        await job.memory.sync_turn(job.messages)
+        await with_deadline(
+            job.memory.sync_turn(job.messages),
+            seconds=job.timeout,
+            label="memory_sync",
+        )
     except asyncio.CancelledError:
         raise
+    except TimeoutError:
+        logger.warning("memory sync timed out after %.1fs turn=%s", job.timeout, job.turn_id)
     except Exception:
         logger.warning("background memory sync failed", exc_info=True)
     finally:
@@ -120,6 +131,7 @@ def enqueue_sync(
     messages: list[dict[str, Any]],
     *,
     turn_id: str | None = None,
+    timeout: float = DEFAULT_SYNC_TIMEOUT_S,
 ) -> None:
     """Queue a turn for background persistence. Never blocks the caller."""
     if not messages:
@@ -130,10 +142,12 @@ def enqueue_sync(
     except RuntimeError:
         # No event loop: the caller is synchronous. Persist inline in a fresh loop
         # rather than silently dropping the turn.
-        _sync_run(_Job(memory=memory, messages=list(messages), turn_id=turn_id))
+        with _lock:
+            _inflight += 1
+        _sync_run(_Job(memory=memory, messages=list(messages), turn_id=turn_id, timeout=timeout))
         return
     with _lock:
-        _jobs.append(_Job(memory=memory, messages=list(messages), turn_id=turn_id))
+        _jobs.append(_Job(memory=memory, messages=list(messages), turn_id=turn_id, timeout=timeout))
         _inflight += 1
     _ensure_worker()
 
@@ -181,7 +195,9 @@ def _sync_run(job: _Job) -> None:
     global _inflight
     started = time.monotonic()
     try:
-        asyncio.run(job.memory.sync_turn(job.messages))
+        asyncio.run(asyncio.wait_for(job.memory.sync_turn(job.messages), timeout=job.timeout))
+    except TimeoutError:
+        logger.warning("memory sync timed out during shutdown drain after %.1fs", job.timeout)
     except Exception:
         logger.warning("memory sync failed during shutdown drain", exc_info=True)
     finally:

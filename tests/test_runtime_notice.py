@@ -34,3 +34,13 @@ def test_notices_are_volatile_not_cached_prefix() -> None:
     )
     assert "Runtime: workspace=/x" in prompt.user_volatile_preamble()
     assert "Runtime: workspace=/x" not in prompt.stable_system_prompt()
+
+
+def test_action_notice_is_volatile_not_cached_prefix() -> None:
+    from lattice.action_ledger import ActionRecord
+    from lattice.prompt import build_action_notice
+
+    notice = build_action_notice([ActionRecord(tool="read_file", target="finance.py")])
+    prompt = build_prompt_bundle(Profile(id="default"), [], [notice])
+    assert "read_file finance.py" in prompt.user_volatile_preamble()
+    assert "read_file finance.py" not in prompt.stable_system_prompt()

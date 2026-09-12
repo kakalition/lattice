@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from pydantic_ai._run_context import RunContext
@@ -21,6 +21,7 @@ from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RequestUsage
 
+from lattice.eval.cassette import get_recorder
 from lattice.turn_trace import current_turn_id
 
 logger = logging.getLogger("lattice.llm")
@@ -120,6 +121,18 @@ class LoggingModel(WrapperModel):
             )
         )
 
+    def _record(
+        self,
+        messages: list[ModelMessage],
+        response: ModelResponse | None,
+        usage: RequestUsage | None,
+        *,
+        stream: bool,
+    ) -> None:
+        recorder = get_recorder()
+        if recorder is not None:
+            recorder.record(messages=messages, response=response, usage=usage, stream=stream)
+
     async def request(
         self,
         messages: list[ModelMessage],
@@ -149,6 +162,7 @@ class LoggingModel(WrapperModel):
             stream=False,
             finish_reason=response.finish_reason,
         )
+        self._record(messages, response, response.usage, stream=False)
         return response
 
     @asynccontextmanager
@@ -182,6 +196,10 @@ class LoggingModel(WrapperModel):
             usage=getattr(response_stream, "usage", None),
             stream=True,
         )
+        final: ModelResponse | None = None
+        with suppress(Exception):
+            final = response_stream.get()
+        self._record(messages, final, getattr(response_stream, "usage", None), stream=True)
 
 
 def with_llm_logging(model: Model) -> Model:

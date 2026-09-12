@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 
 from pydantic import BaseModel
@@ -46,9 +47,14 @@ async def run_shell(command: str, *, timeout: float = DEFAULT_TIMEOUT_S) -> Shel
 
     try:
         return await with_deadline(_wait(), seconds=timeout, label="shell")
-    except TimeoutError:
-        try:
-            os.killpg(proc.pid, 9)
-        except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
-        raise
+    finally:
+        # Fires on timeout, outer cancellation, or any error — an outer cancel
+        # must not orphan the start_new_session=True process group.
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, 9)
+            except (ProcessLookupError, PermissionError, OSError):
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.kill()
+            with contextlib.suppress(BaseException):
+                await proc.wait()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 
 from textual.app import App, ComposeResult
@@ -86,12 +87,15 @@ class LatticeTui(App[None]):
         self.session_id: str | None = None
         self.hitl = TuiHitl(self)
         self._busy = False
+        self._cancel_event: asyncio.Event | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield RichLog(id="log", markup=True)
         yield Static(f"profile={self.profile_id}", id="status")
-        yield Input(placeholder=f"Message {brand_label(glyph=False)}… (/profile, /quit)", id="input")
+        yield Input(
+            placeholder=f"Message {brand_label(glyph=False)}… (/profile, /quit)", id="input"
+        )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -129,6 +133,13 @@ class LatticeTui(App[None]):
             status.update(f"profile={self.profile_id}")
             log.write(f"[cyan]switched profile → {self.profile_id}[/]")
             return
+        if text == "/stop":
+            if self._cancel_event is not None:
+                self._cancel_event.set()
+                log.write("[yellow]cancelling current turn…[/]")
+            else:
+                log.write("[yellow]nothing to stop[/]")
+            return
         if self._busy:
             log.write("[yellow]busy — message ignored (use queue in REPL adapter)[/]")
             return
@@ -136,6 +147,8 @@ class LatticeTui(App[None]):
         log.write(f"[green]you:[/] {text}")
         status.update(f"profile={self.profile_id} | {idle_phrase(0)}")
         live = LiveTurnEvents(_TuiStatusSink(self, self.profile_id), min_interval_s=0.2)
+        cancel_event = asyncio.Event()
+        self._cancel_event = cancel_event
         try:
             async with bind_live_events(live):
                 await live.on_status("thinking")
@@ -145,6 +158,7 @@ class LatticeTui(App[None]):
                         profile_id=self.profile_id,
                         channel="cli",
                         session_id=self.session_id,
+                        cancel_event=cancel_event,
                     )
                 )
             self.session_id = outbound.session_id
@@ -152,6 +166,7 @@ class LatticeTui(App[None]):
         except Exception as exc:
             log.write(f"[red]error:[/] {exc}")
         finally:
+            self._cancel_event = None
             self._busy = False
             status.update(f"profile={self.profile_id}")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import time
 from datetime import datetime
@@ -15,6 +16,7 @@ from pydantic_ai.messages import PartDeltaEvent, PartStartEvent, TextPart, TextP
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from lattice.action_ledger import actions_from_messages
 from lattice.agent_app import (
     TurnDeps,
     build_memory_for_profile,
@@ -31,7 +33,7 @@ from lattice.mcp import McpHostManager
 from lattice.memory.worker import enqueue_sync
 from lattice.models import Inbound, Outbound
 from lattice.profiles import get_profile
-from lattice.prompt import build_runtime_notice
+from lattice.prompt import build_action_notice, build_runtime_notice
 from lattice.providers import (
     Summarizer,
     build_openai_model,
@@ -53,6 +55,7 @@ from lattice.sqlite import SqlitePool, SqliteRegistry
 from lattice.timeutil import resolve_timezone
 from lattice.tools.deadline import with_deadline
 from lattice.tools.user_tools import scan_user_tools
+from lattice.turn_record import ContextRecord, TurnOutcome
 from lattice.turn_trace import LoggingTurnEvents, new_turn_id
 
 
@@ -146,11 +149,18 @@ async def run_turn(
     mcp: McpHostManager | None = None,
     cancel_event: asyncio.Event | None = None,
     model: Any | None = None,
+    stream: bool = True,
+    memory: Any | None = None,
 ) -> Outbound:
     settings = settings or load_settings()
     turn_id = new_turn_id()
     inner = events or current_live_events() or NullTurnEvents()
-    trace = LoggingTurnEvents(turn_id, inner=inner)
+    trace = LoggingTurnEvents(
+        turn_id,
+        inner=inner,
+        home=settings.home,
+        record_enabled=settings.observability.turn_record,
+    )
     events = trace
     hitl = hitl or AutoApproveHitl(approve_all=False)
     store = session_store or SessionStore(settings.home / "state.db")
@@ -182,6 +192,7 @@ async def run_turn(
     await events.on_status("loading session")
     existing = await store.get(session_id)
     messages: list[dict[str, Any]] = sanitize_messages(existing["messages"] if existing else [])
+    context_record = ContextRecord(before_messages=len(messages))
 
     sticky_model = await store.get_sticky_primary_model(inbound.channel, inbound.user_id)
     primary_id = resolve_model_id(
@@ -204,7 +215,7 @@ async def run_turn(
         notices.append(f"[notice] {err}")
     user_specs = user_tools.specs
 
-    memory = build_memory_for_profile(settings, profile, model_id=primary_id)
+    memory = memory or build_memory_for_profile(settings, profile, model_id=primary_id)
     with trace.timed("memory_prefetch"):
         prefetch = await memory.search(inbound.text, limit=5)
     if prefetch:
@@ -218,11 +229,27 @@ async def run_turn(
         if not tg_skill.startswith("skill not found"):
             notices.append(tg_skill)
 
+    user_content = inbound.text
+    if inbound.steer_text:
+        user_content = f"{user_content}\n\n[steer] {inbound.steer_text}"
+    if inbound.media_paths:
+        paths = ", ".join(str(p) for p in inbound.media_paths)
+        user_content = (
+            f"{user_content}\n\n[media] {paths}\n(Use the ocr tool on image paths to extract text.)"
+        )
+
     pressure = PressureConfig(ratio=settings.agent.context_pressure_ratio)
-    if pressure.is_over_pressure(messages):
+    # Include the pending user turn in the estimate: the stored transcript alone
+    # under-counts and fires compression late.
+    if pressure.is_over_pressure(messages, extra_chars=len(user_content)):
         await events.on_status("compressing context")
         with trace.timed("compress"):
-            enqueue_sync(memory, messages, turn_id=turn_id)
+            enqueue_sync(
+                memory,
+                messages,
+                turn_id=turn_id,
+                timeout=float(settings.memory.sync_timeout_seconds),
+            )
             aux = Summarizer(settings, primary_id)
             result = await compress(
                 messages,
@@ -232,6 +259,8 @@ async def run_turn(
             )
         if result.compressed:
             notices.append("Context was compressed; older turns summarized.")
+            context_record.compressed = True
+            context_record.used_trim_fallback = result.used_trim_fallback
             parent_id = session_id
             session_id = await store.create(
                 profile_id=profile.id,
@@ -259,6 +288,9 @@ async def run_turn(
             user_tools=[spec.name for spec in user_specs],
         )
     )
+    action_notice = build_action_notice(existing.get("actions") if existing else None)
+    if action_notice:
+        notices.append(action_notice)
     prompt = build_prompt_bundle(profile, entries, notices)
     system_prompt = prompt.stable_system_prompt()
     enabled = resolve_enabled_tools(
@@ -269,15 +301,6 @@ async def run_turn(
         extra_tools=[spec.name for spec in user_specs],
     )
 
-    user_content = inbound.text
-    if inbound.steer_text:
-        user_content = f"{user_content}\n\n[steer] {inbound.steer_text}"
-    if inbound.media_paths:
-        paths = ", ".join(str(p) for p in inbound.media_paths)
-        user_content = (
-            f"{user_content}\n\n[media] {paths}\n(Use the ocr tool on image paths to extract text.)"
-        )
-
     preamble = prompt.user_volatile_preamble()
     run_user_prompt = f"{preamble}\n\n{user_content}" if preamble else user_content
 
@@ -286,6 +309,7 @@ async def run_turn(
         {
             **prompt_cache_settings(settings, model_obj),
             **session_routing_settings(settings, session_id),
+            "timeout": float(settings.agent.request_timeout_seconds),
         },
     )
 
@@ -304,6 +328,7 @@ async def run_turn(
         inbound_text=user_content,
         tools=enabled,
         skills=entries,
+        model=primary_id,
     )
 
     deps = TurnDeps(
@@ -326,7 +351,7 @@ async def run_turn(
     )
 
     messages.append({"role": "user", "content": user_content})
-    await store.save_messages(session_id, messages)
+    await store.append_message(session_id, {"role": "user", "content": user_content})
 
     agent = create_agent(
         settings,
@@ -338,8 +363,8 @@ async def run_turn(
         model_settings=cache_settings,
     )
 
-    async def _on_stream(_ctx: Any, stream: Any) -> None:
-        async for event in stream:
+    async def _on_stream(_ctx: Any, stream_events: Any) -> None:
+        async for event in stream_events:
             if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
                 if event.part.content:
                     await events.on_stream_delta(event.part.content)
@@ -348,21 +373,24 @@ async def run_turn(
                 if delta:
                     await events.on_stream_delta(delta)
 
-    async def _run_once() -> tuple[str, RunUsage]:
+    async def _run_once() -> tuple[str, RunUsage, list[Any]]:
         result = await agent.run(
             run_user_prompt,
             deps=deps,
             message_history=history or None,
             usage_limits=UsageLimits(request_limit=settings.agent.iteration_budget),
-            event_stream_handler=_on_stream,
+            event_stream_handler=_on_stream if stream else None,
         )
-        return str(result.output), result.usage
+        return str(result.output), result.usage, result.new_messages()
 
-    deadline = float(settings.agent.idle_watchdog_seconds)
+    deadline = float(settings.agent.turn_timeout_seconds)
     text = ""
     err: str | None = None
+    outcome = TurnOutcome.COMPLETED
+    error_kind: str | None = None
     usage = RunUsage()
     retries = 0
+    run_messages: list[Any] = []
 
     def _usage_payload() -> dict[str, Any]:
         return usage_to_dict(usage, model=primary_id)
@@ -370,24 +398,87 @@ async def run_turn(
     usage_payload = _usage_payload()
     media_before = snapshot_media(workspace)
     turn_start = time.time()
+
+    def _rebuild_history() -> None:
+        nonlocal history
+        history = session_dicts_to_history(
+            messages,
+            cache_boundary=settings.agent.prompt_cache and supports_explicit_cache(model_obj),
+            cache_ttl=settings.agent.prompt_cache_ttl,
+        )
+
+    async def _run_with_cancel() -> tuple[str, RunUsage, list[Any]]:
+        """Run one attempt, racing it against the total deadline and cancel event."""
+        run_task = asyncio.ensure_future(_run_once())
+        if cancel_event is None:
+            return await with_deadline(run_task, seconds=deadline, label="turn")
+        cancel_task = asyncio.ensure_future(cancel_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {run_task, cancel_task},
+                timeout=deadline,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                run_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await run_task
+                raise TimeoutError(f"turn exceeded {deadline:.0f}s")
+            if cancel_task in done and run_task not in done:
+                run_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await run_task
+                raise TurnCancelled("cancelled")
+            cancel_task.cancel()
+            with contextlib.suppress(BaseException):
+                await cancel_task
+            return await run_task
+        finally:
+            for task in (run_task, cancel_task):
+                if not task.done():
+                    task.cancel()
+
     try:
         with trace.timed("executor"):
             await events.on_status("thinking")
             while True:
                 if cancel_event and cancel_event.is_set():
-                    raise TurnCancelled("cancelled")
+                    outcome = TurnOutcome.CANCELLED
+                    text = text or "[cancelled]"
+                    break
                 try:
-                    text, attempt_usage = await with_deadline(
-                        _run_once(), seconds=deadline, label="turn"
-                    )
+                    text, attempt_usage, attempt_messages = await _run_with_cancel()
                     usage = usage + attempt_usage
+                    run_messages = attempt_messages
                     if not text.strip():
+                        # An empty completion after tools ran is not retryable:
+                        # re-running would replay side effects.
+                        if trace.tool_calls:
+                            outcome = TurnOutcome.EMPTY
+                            text = "(no reply)"
+                            break
                         raise RuntimeError("empty completion")
+                    outcome = TurnOutcome.COMPLETED
                     break
                 except TurnCancelled:
-                    raise
+                    outcome = TurnOutcome.CANCELLED
+                    text = text or "[cancelled]"
+                    break
+                except asyncio.CancelledError:
+                    outcome = TurnOutcome.CANCELLED
+                    text = text or "[cancelled]"
+                    break
+                except TimeoutError as exc:
+                    outcome = TurnOutcome.TIMEOUT
+                    err = str(exc)
+                    text = (
+                        f"This turn hit its {deadline:.0f}s deadline before finishing. "
+                        "Ask me to continue and I'll pick up from here."
+                    )
+                    break
                 except Exception as exc:
                     if isinstance(exc, UsageLimitExceeded):
+                        outcome = TurnOutcome.BUDGET
                         text = (
                             f"I reached this turn's request budget "
                             f"({settings.agent.iteration_budget} model requests) "
@@ -398,24 +489,57 @@ async def run_turn(
                         break
                     reason = classify_provider_error(exc)
                     action = recovery_action(reason)
+                    error_kind = reason.value
                     await events.on_status(f"provider {reason.value} → {action}")
                     if action == "retry" and retries < 2:
+                        if trace.tool_calls:
+                            outcome = TurnOutcome.ERROR
+                            err = str(exc)
+                            text = (
+                                "I hit a transient provider error after running tools. "
+                                "To avoid repeating side effects I stopped here — ask me "
+                                "to continue and I'll pick up from where I left off."
+                            )
+                            break
                         retries += 1
                         continue
                     if action == "compress":
-                        enqueue_sync(memory, messages, turn_id=turn_id)
+                        enqueue_sync(
+                            memory,
+                            messages,
+                            turn_id=turn_id,
+                            timeout=float(settings.memory.sync_timeout_seconds),
+                        )
                         aux = Summarizer(settings, primary_id)
                         result = await compress(
                             messages,
                             aux=aux,
                             protect_last_n=settings.agent.protect_last_n,
                             pressure=pressure,
+                            force=True,
                         )
-                        messages = result.messages
-                        await store.save_messages(session_id, messages)
+                        if result.compressed:
+                            context_record.compressed = True
+                            context_record.used_trim_fallback = result.used_trim_fallback
+                            messages = result.messages
+                            parent_id = session_id
+                            session_id = await store.create(
+                                profile_id=profile.id,
+                                user_id=inbound.user_id,
+                                channel=inbound.channel,
+                                parent_id=parent_id,
+                            )
+                            deps.session_id = session_id
+                            _rebuild_history()
+                            await store.save_messages(session_id, messages)
                         retries += 1
                         if retries < 3:
                             continue
+                    outcome = (
+                        TurnOutcome.EMPTY
+                        if error_kind == "empty_completion"
+                        else TurnOutcome.ERROR
+                    )
                     if action == "abort" or retries >= 3:
                         text = _provider_error_text(exc)
                         err = str(exc)
@@ -423,25 +547,50 @@ async def run_turn(
                     text = _provider_error_text(exc)
                     err = str(exc)
                     break
+    except TurnCancelled:
+        outcome = TurnOutcome.CANCELLED
+        text = text or "[cancelled]"
+    except asyncio.CancelledError:
+        # An outer task cancel (e.g. Telegram /stop) that lands outside the retry
+        # loop must still persist an assistant tombstone.
+        outcome = TurnOutcome.CANCELLED
+        text = text or "[cancelled]"
     finally:
         if text:
             messages.append({"role": "assistant", "content": text})
             usage_payload = _usage_payload()
-            await store.save_messages(session_id, messages, usage=usage_payload)
-            enqueue_sync(memory, messages[-4:], turn_id=turn_id)
+            with contextlib.suppress(Exception):
+                await store.append_message(
+                    session_id, {"role": "assistant", "content": text}, usage=usage_payload
+                )
+            enqueue_sync(
+                memory,
+                messages[-4:],
+                turn_id=turn_id,
+                timeout=float(settings.memory.sync_timeout_seconds),
+            )
+        context_record.after_messages = len(messages)
         await pool.close_all()
+        actions = actions_from_messages(run_messages, media=list(deps.outbound_media))
+        if actions:
+            with contextlib.suppress(Exception):
+                await store.append_actions(session_id, actions)
         trace.log_end(
             outbound_text=text or "",
             error=err,
             usage=usage_payload,
             timings=trace.phases,
+            outcome=outcome,
+            retries=retries,
+            context=context_record,
+            error_kind=error_kind,
         )
 
     media = [p for p in deps.outbound_media if p.exists()]
-    existing = {p.resolve() for p in media}
+    existing_media = {p.resolve() for p in media}
     media.extend(
         discover_turn_media(
-            workspace, turn_start=turn_start, before=media_before, existing=existing
+            workspace, turn_start=turn_start, before=media_before, existing=existing_media
         )
     )
     return Outbound(

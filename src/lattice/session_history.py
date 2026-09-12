@@ -59,6 +59,10 @@ def session_dicts_to_history(
             history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
         elif role == "assistant":
             history.append(ModelResponse(parts=[TextPart(content=content)]))
+        elif role == "summary":
+            # Compression summary must not be hoisted into the cached system
+            # prefix; render it as a user-anchored pseudo-message.
+            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
         elif role == "system":
             history.append(ModelRequest(parts=[SystemPromptPart(content=content)]))
     if cache_boundary and history:

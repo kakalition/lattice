@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from lattice.context.pressure import PressureConfig
 from lattice.providers.summarizer import Summarizer
 
+SUMMARY_MARKER = "[compressed context summary]"
+
 
 class CompressResult(BaseModel):
     messages: list[dict[str, Any]]
@@ -32,19 +34,51 @@ def _tool_pair_indices(messages: list[dict[str, Any]]) -> set[int]:
     return protected
 
 
+def _is_summary(msg: dict[str, Any]) -> bool:
+    return str(msg.get("content") or "").startswith(SUMMARY_MARKER)
+
+
+def _render_transcript(messages: list[dict[str, Any]]) -> str:
+    """Include tool names + clipped args so the summary keeps what was done."""
+    lines: list[str] = []
+    for msg in messages:
+        role = str(msg.get("role") or "")
+        content = msg.get("content")
+        calls = msg.get("tool_calls")
+        if calls:
+            for call in calls:
+                fn = (call or {}).get("function") or {}
+                name = fn.get("name") or (call or {}).get("name") or "?"
+                args = str(fn.get("arguments") or "")
+                lines.append(f"assistant tool_call {name}: {args[:200]}")
+        if isinstance(content, str) and content.strip():
+            lines.append(f"{role}: {content[:2000]}")
+    return "\n".join(lines)
+
+
 async def compress(
     messages: list[dict[str, Any]],
     *,
     aux: Summarizer | None,
     protect_last_n: int = 20,
     pressure: PressureConfig | None = None,
+    force: bool = False,
 ) -> CompressResult:
     pressure = pressure or PressureConfig()
-    if len(messages) <= protect_last_n + 2 or not pressure.is_over_pressure(messages):
+    if len(messages) <= protect_last_n + 2 or (
+        not force and not pressure.is_over_pressure(messages)
+    ):
         return CompressResult(messages=messages, summary="", compressed=False)
 
-    head = messages[:1] if messages and messages[0].get("role") == "system" else []
-    start = len(head)
+    # A previous compression summary must not accumulate: fold it into the text
+    # being summarized and replace it, so exactly one summary survives.
+    head: list[dict[str, Any]] = []
+    prior_summary = ""
+    if messages and _is_summary(messages[0]):
+        prior_summary = str(messages[0].get("content") or "")
+    elif messages and messages[0].get("role") == "system":
+        head = messages[:1]
+    start = 1 if (prior_summary or head) else 0
     end = max(start, len(messages) - protect_last_n)
     middle = messages[start:end]
     tail = messages[end:]
@@ -58,9 +92,10 @@ async def compress(
         middle = messages[start:end]
         tail = messages[end:]
 
-    transcript = "\n".join(
-        f"{m.get('role')}: {m.get('content')}" for m in middle if m.get("content")
-    )
+    transcript = _render_transcript(middle)
+    if prior_summary:
+        transcript = f"{prior_summary}\n{transcript}"
+
     summary = ""
     used_trim = False
     if aux is not None:
@@ -68,17 +103,14 @@ async def compress(
             summary = await aux.summarize(transcript)
         except Exception:
             used_trim = True
-            summary = "(trim fallback — aux summarize failed)"
-            middle = middle[: max(1, len(middle) // 4)]
-            transcript = "\n".join(str(m.get("content")) for m in middle)
-            summary = f"Trimmed older context. Kept excerpt:\n{transcript[:1500]}"
+            summary = _trim_fallback(middle)
     else:
         used_trim = True
-        summary = f"Trimmed older context. Excerpt:\n{transcript[:1500]}"
+        summary = _trim_fallback(middle)
 
     summary_msg = {
-        "role": "system",
-        "content": f"[compressed context summary]\n{summary}",
+        "role": "summary",
+        "content": f"{SUMMARY_MARKER}\n{summary}",
     }
     new_messages = [*head, summary_msg, *tail]
     return CompressResult(
@@ -86,4 +118,16 @@ async def compress(
         summary=summary,
         compressed=True,
         used_trim_fallback=used_trim,
+    )
+
+
+def _trim_fallback(middle: list[dict[str, Any]]) -> str:
+    """Keep the newest quarter — recent context matters more than the oldest."""
+    keep = max(1, len(middle) // 4)
+    kept = middle[-keep:]
+    dropped = len(middle) - len(kept)
+    excerpt = _render_transcript(kept)[:1500]
+    return (
+        f"Trimmed older context ({dropped} message(s) dropped); kept the most recent "
+        f"excerpt:\n{excerpt}"
     )

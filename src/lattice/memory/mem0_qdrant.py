@@ -317,8 +317,11 @@ class Mem0QdrantMemory:
                 # mem0 v2 rejects top-level entity kwargs on search(); they must
                 # be passed as filters. Passing user_id= here raised ValueError,
                 # which the except below turned into a silent empty result.
-                results = self._memory.search(
-                    query, filters={"user_id": self.collection}, limit=limit
+                results = await asyncio.to_thread(
+                    self._memory.search,
+                    query,
+                    filters={"user_id": self.collection},
+                    limit=limit,
                 )
             if isinstance(results, dict):
                 results = results.get("results") or results.get("memories") or []
@@ -365,17 +368,28 @@ class Mem0QdrantMemory:
         try:
             with _quiet_mem0():
                 if probe_text is not None:
-                    result = self._memory.add(
+                    result = await asyncio.to_thread(
+                        self._memory.add,
                         probe_text,
                         user_id=self.collection,
                         metadata=metadata or {},
                         infer=False,
                     )
                 else:
-                    result = self._memory.add(
-                        text, user_id=self.collection, metadata=metadata or {}, infer=infer
+                    result = await asyncio.to_thread(
+                        self._memory.add,
+                        text,
+                        user_id=self.collection,
+                        metadata=metadata or {},
+                        infer=infer,
                     )
-            return str(_first_memory_id(result) or uuid.uuid4())
+            # Never fabricate an id: a phantom id makes later update/forget
+            # silently target nothing.
+            memory_id = _first_memory_id(result)
+            if not memory_id:
+                logger.warning("mem0 add returned no memory id; stored without one")
+                return ""
+            return memory_id
         except Exception:
             logger.warning("mem0 add failed; storing in the in-memory fallback", exc_info=True)
             return await self._fallback.add(text, metadata=metadata)
@@ -386,7 +400,7 @@ class Mem0QdrantMemory:
             return
         try:
             with _quiet_mem0():
-                self._memory.update(memory_id, text)
+                await asyncio.to_thread(self._memory.update, memory_id, text)
         except Exception:
             await self._fallback.update(memory_id, text)
 
@@ -396,7 +410,7 @@ class Mem0QdrantMemory:
             return
         try:
             with _quiet_mem0():
-                self._memory.delete(memory_id)
+                await asyncio.to_thread(self._memory.delete, memory_id)
         except Exception:
             await self._fallback.forget(memory_id)
 

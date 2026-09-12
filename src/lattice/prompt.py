@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -72,6 +74,33 @@ def build_runtime_notice(
         "or scan `~`; use search_files/read_file to locate files and sqlite_schema to "
         "inspect databases; register an existing workspace DB by its relative path."
     )
+    return "\n".join(lines)
+
+
+def build_action_notice(actions: list[Any], *, limit: int = 15) -> str:
+    """Compact render of the session's action ledger for the volatile tail.
+
+    Kept out of the cached system prefix (it changes every turn) and out of the
+    summarizer transcript (bounded, not worth summarizing).
+    """
+    if not actions:
+        return ""
+    lines = ["Recent actions:"]
+    for action in actions[-limit:]:
+        if isinstance(action, dict):
+            tool = str(action.get("tool") or "?")
+            target = str(action.get("target") or "")
+            ok = bool(action.get("ok", True))
+            artifacts = action.get("artifacts") or []
+        else:
+            tool = str(getattr(action, "tool", "?"))
+            target = str(getattr(action, "target", "") or "")
+            ok = bool(getattr(action, "ok", True))
+            artifacts = getattr(action, "artifacts", []) or []
+        suffix = f" {target}" if target else ""
+        if artifacts:
+            suffix += " -> " + ", ".join(str(a) for a in artifacts)
+        lines.append(f"- {tool}{suffix} → {'ok' if ok else 'failed'}")
     return "\n".join(lines)
 
 

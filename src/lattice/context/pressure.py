@@ -13,8 +13,8 @@ class PressureConfig(BaseModel):
     def threshold_chars(self) -> int:
         return int(self.model_context_tokens * self.ratio * self.chars_per_token)
 
-    def estimate_chars(self, messages: list[dict]) -> int:
-        total = 0
+    def estimate_chars(self, messages: list[dict], *, extra_chars: int = 0) -> int:
+        total = extra_chars
         for msg in messages:
             content = msg.get("content")
             if isinstance(content, str):
@@ -25,5 +25,5 @@ class PressureConfig(BaseModel):
                 total += len(str(msg["tool_calls"]))
         return total
 
-    def is_over_pressure(self, messages: list[dict]) -> bool:
-        return self.estimate_chars(messages) >= self.threshold_chars()
+    def is_over_pressure(self, messages: list[dict], *, extra_chars: int = 0) -> bool:
+        return self.estimate_chars(messages, extra_chars=extra_chars) >= self.threshold_chars()

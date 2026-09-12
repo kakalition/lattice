@@ -48,6 +48,7 @@ class TelegramBot:
         self._queues: dict[int, asyncio.Queue[str]] = {}
         self._seen_updates: set[int] = set()
         self._cancel: dict[int, asyncio.Event] = {}
+        self._turns: dict[int, asyncio.Task[Any]] = {}
 
     def name(self) -> str:
         return "telegram"
@@ -210,7 +211,13 @@ class TelegramBot:
             ev = self._cancel.setdefault(uid, asyncio.Event())
             ev.set()
             n = self.hitl.cancel_all("cancel")
-            self._busy.discard(uid)
+            # Cancel the running turn task too: the event is cooperative, but a
+            # blocked tool needs the task cancel to unwind promptly.
+            task = self._turns.get(uid)
+            if task is not None and not task.done():
+                task.cancel()
+            else:
+                self._busy.discard(uid)
             await _reply(
                 update, f"Stop requested (cleared {n} pending approval(s)). Send a new message."
             )
@@ -487,6 +494,8 @@ class TelegramBot:
                 media_paths.append(path)
 
             uid = user.id
+            cancel_event = self._cancel.setdefault(uid, asyncio.Event())
+            cancel_event.clear()
             if uid in self._busy:
                 # Free-text HITL clarify (e.g. timezone) must resolve the waiting turn,
                 # not start a queued turn that never runs.
@@ -556,16 +565,20 @@ class TelegramBot:
                 try:
                     async with bind_live_events(live):
                         await live.on_status("thinking")
-                        outbound = await self.handler(
-                            Inbound(
-                                text=turn_text,
-                                profile_id=sticky,
-                                user_id=str(uid),
-                                channel="telegram",
-                                session_id=self._sessions.get(uid),
-                                media_paths=paths,
+                        try:
+                            outbound = await self.handler(
+                                Inbound(
+                                    text=turn_text,
+                                    profile_id=sticky,
+                                    user_id=str(uid),
+                                    channel="telegram",
+                                    session_id=self._sessions.get(uid),
+                                    media_paths=paths,
+                                    cancel_event=cancel_event,
+                                )
                             )
-                        )
+                        except asyncio.CancelledError:
+                            outbound = Outbound(text="[cancelled]", profile_id=sticky)
                 finally:
                     stop_typing.set()
                     typing_task.cancel()
@@ -603,6 +616,7 @@ class TelegramBot:
                             logger.exception("failed sending media %s", mp)
 
             self._busy.add(uid)
+            self._turns[uid] = asyncio.current_task()
             try:
                 await _run_turn(text, media_paths)
                 # Drain queued follow-ups as fresh turns.
@@ -611,6 +625,7 @@ class TelegramBot:
                     nxt = q.get_nowait()
                     await _run_turn(nxt, [])
             finally:
+                self._turns.pop(uid, None)
                 self._busy.discard(uid)
 
         app.add_handler(CommandHandler("start", on_start))

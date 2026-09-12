@@ -9,6 +9,12 @@ agent:
   iteration_budget: 60
   hitl_timeout_seconds: 600
   workspace: null
+  # Total turn deadline (legacy alias `idle_watchdog_seconds` still works).
+  turn_timeout_seconds: 600
+  request_timeout_seconds: 120
+
+observability:
+  turn_record: true
 
 tools:
   allow: ["*"]

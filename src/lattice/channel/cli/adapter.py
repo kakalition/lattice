@@ -54,6 +54,7 @@ class CliAdapter:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._busy = False
         self._steer: str | None = None
+        self._cancel_event: asyncio.Event | None = None
 
     def name(self) -> str:
         return "cli"
@@ -67,6 +68,8 @@ class CliAdapter:
         sink = _RichStatusSink(self.console)
         sink.start()
         live = LiveTurnEvents(sink, min_interval_s=0.2)
+        cancel_event = asyncio.Event()
+        self._cancel_event = cancel_event
         try:
             async with bind_live_events(live):
                 await live.on_status("thinking")
@@ -77,6 +80,7 @@ class CliAdapter:
                     channel="cli",
                     session_id=self.session_id,
                     steer_text=self._steer,
+                    cancel_event=cancel_event,
                 )
                 self._steer = None
                 logger.info("recv profile=%s text=%s", self.profile_id, text[:200])
@@ -84,6 +88,7 @@ class CliAdapter:
                 logger.info("send chars=%d", len(outbound.text or ""))
                 await self.send(outbound)
         finally:
+            self._cancel_event = None
             sink.stop()
 
     async def run(self, handler: Callable[[Inbound], Awaitable[Outbound]]) -> None:
@@ -175,7 +180,11 @@ class CliAdapter:
                 self.console.print(f"resumed {self.session_id}")
                 continue
             if line == "/stop":
-                self.console.print("stop noted (no active turn cancel token in REPL)")
+                if self._cancel_event is not None:
+                    self._cancel_event.set()
+                    self.console.print("cancelling current turn…")
+                else:
+                    self.console.print("nothing to stop")
                 continue
 
             if self._busy:

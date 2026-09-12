@@ -80,8 +80,9 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "integration: live checks needing API keys (deselect with -m 'not integration')",
+    "eval: offline cassette replay (run explicitly with -m eval)",
 ]
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not eval'"
 
 [tool.basedpyright]
 include = ["src", "tests"]
