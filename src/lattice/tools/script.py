@@ -18,6 +18,27 @@ from lattice.tools.file_safety import resolve_agent_path
 LANG_EXTS = {"python": ".py", "node": ".js", "bash": ".sh"}
 LANG_BINARIES = {"python": ("python3", "python"), "node": ("node",), "bash": ("bash",)}
 
+# Skill scripts persist global state under home (registry, jobs, profiles). Under
+# bwrap the home tree is not mounted, so these dirs are bound read-write for the
+# owning skill only — a script gets write access to exactly what its skill owns.
+SKILL_HOME_DIRS: dict[str, tuple[str, ...]] = {
+    "sqlite-admin": ("sqlite",),
+    "scheduling": ("scheduler",),
+    "profile-authoring": ("profiles",),
+}
+
+
+def skill_writable_home_dirs(script_path: Path, home: Path) -> list[Path]:
+    """Home subdirectories the owning skill may write, or ``[]`` for unknown scripts."""
+    parts = script_path.resolve().parts
+    if "skills" not in parts:
+        return []
+    skill = parts[parts.index("skills") + 1]
+    dirs = SKILL_HOME_DIRS.get(skill)
+    if not dirs:
+        return []
+    return [(home / d).resolve() for d in dirs]
+
 
 class ScriptResult(BaseModel):
     exit_code: int
@@ -93,6 +114,7 @@ def build_bwrap_command(
     allow_network: bool,
     argv_extra: list[str] | None = None,
     extra_ro_binds: list[Path] | None = None,
+    rw_home_binds: list[Path] | None = None,
     home: Path | None = None,
 ) -> list[str]:
     cmd: list[str] = ["bwrap", "--die-with-parent", "--new-session"]
@@ -132,6 +154,17 @@ def build_bwrap_command(
             "--bind",
             str(scripts_root.resolve()),
             str(scripts_root.resolve()),
+        ]
+    )
+    # Scoped read-write home mounts so a skill script can persist its own state.
+    for rw in rw_home_binds or []:
+        resolved_rw = str(Path(rw).expanduser().resolve())
+        if resolved_rw not in bound:
+            cmd.extend(["--bind", resolved_rw, resolved_rw])
+            bound.add(resolved_rw)
+
+    cmd.extend(
+        [
             "--chdir",
             str(workspace.resolve()),
             "--",
@@ -210,6 +243,11 @@ async def execute_script(
     timeout = max(1.0, min(timeout, float(cfg.max_timeout_seconds)))
 
     if use_bwrap:
+        rw_home_binds = skill_writable_home_dirs(script_path, home)
+        for rw_dir in rw_home_binds:
+            # bwrap mounts need an existing source; ensure_home covers the usual
+            # dirs, but a custom home may not have them yet.
+            rw_dir.mkdir(parents=True, exist_ok=True)
         cmd = build_bwrap_command(
             interpreter=interpreter,
             script_path=script_path,
@@ -218,6 +256,7 @@ async def execute_script(
             allow_network=cfg.allow_network,
             argv_extra=argv_extra,
             home=home,
+            rw_home_binds=rw_home_binds,
         )
         sandbox = "bwrap"
     else:

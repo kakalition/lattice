@@ -15,6 +15,7 @@ from lattice.tools.script import (
     bwrap_available,
     execute_script,
     format_script_result,
+    skill_writable_home_dirs,
 )
 
 
@@ -126,6 +127,43 @@ def test_build_bwrap_command_binds_skill_and_tool_trees(tmp_path: Path) -> None:
             idx = cmd.index(resolved)
             assert cmd[idx - 1] == "--ro-bind"
             assert ["--bind", resolved, resolved] != cmd[idx - 1 : idx + 2]
+
+
+def test_bwrap_command_binds_scoped_writable_home_dirs(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    sqlite_dir = home / "sqlite"
+    scripts_root = home / "scripts"
+    common = {
+        "interpreter": "/usr/bin/python3",
+        "script_path": tmp_path / "x.py",
+        "workspace": tmp_path,
+        "scripts_root": scripts_root,
+        "allow_network": False,
+    }
+    cmd = build_bwrap_command(**common, rw_home_binds=[sqlite_dir])
+    idx = cmd.index(str(sqlite_dir.resolve()))
+    assert cmd[idx - 1] == "--bind"  # writable, not --ro-bind
+    assert [
+        "--ro-bind",
+        str(sqlite_dir.resolve()),
+        str(sqlite_dir.resolve()),
+    ] != cmd[idx - 1 : idx + 2]
+    # The workspace and scripts root stay writable as before.
+    assert cmd.count("--bind") >= 3
+
+
+def test_skill_writable_home_dirs_scoped_to_owner(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cases = {
+        "skills/sqlite-admin/scripts/sqlite.py": [home / "sqlite"],
+        "skills/scheduling/scripts/schedule.py": [home / "scheduler"],
+        "skills/profile-authoring/scripts/profiles.py": [home / "profiles"],
+        "skills/unknown-skill/scripts/x.py": [],
+        "scripts/inline.py": [],
+    }
+    for rel, expected in cases.items():
+        dirs = skill_writable_home_dirs(home / rel, home)
+        assert [d.resolve() for d in dirs] == [d.resolve() for d in expected], rel
 
 
 @pytest.mark.asyncio
