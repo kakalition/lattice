@@ -15,7 +15,9 @@ async def memory_search(memory: Memory, query: str) -> str:
 
 
 async def memory_add(memory: Memory, text: str) -> str:
-    mid = await memory.add(text)
+    # Store verbatim: mem0's extraction LLM fails the whole batch on malformed
+    # JSON, so an explicit "remember this" must not depend on it.
+    mid = await memory.add(text, infer=False)
     return f"added memory {mid}"
 
 

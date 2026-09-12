@@ -23,6 +23,23 @@ async def test_memory_roundtrip() -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_add_stores_verbatim() -> None:
+    """Explicit memory_add must not depend on mem0's extraction LLM."""
+    captured: dict = {}
+
+    class _Fake:
+        async def add(self, text, *, metadata=None, infer=True):  # type: ignore[no-untyped-def]
+            captured["text"] = text
+            captured["infer"] = infer
+            return "id"
+
+    out = await memory_add(_Fake(), "User prefers decaf")  # type: ignore[arg-type]
+    assert captured["text"] == "User prefers decaf"
+    assert captured["infer"] is False
+    assert "added memory id" in out
+
+
+@pytest.mark.asyncio
 async def test_sqlite_tools(tmp_path: Path) -> None:
     settings = LatticeSettings(home=tmp_path)
     reg = SqliteRegistry(settings)
