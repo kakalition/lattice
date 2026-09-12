@@ -13,8 +13,8 @@ from lattice.tools.agent._common import AgentT, not_allowed
 def register(agent: AgentT) -> dict[str, Any]:
     @agent.tool
     async def delegate_tool(ctx: RunContext[TurnDeps], task: str, context: str = "") -> str:
-        """Delegate a bounded research/analysis task to the secondary worker model.
-        Use for web/file/sqlite lookups; synthesize the result yourself for the user."""
+        """Delegate a bounded subtask to the secondary worker (same tools as you, minus delegate).
+        Use for research/lookup/analysis you do not need to do inline; synthesize the result yourself."""
         if err := not_allowed(ctx, "delegate"):
             return err
         if ctx.deps.delegate_depth > 0:

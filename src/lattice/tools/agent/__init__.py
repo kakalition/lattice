@@ -98,12 +98,23 @@ _MODULES = [
 ]
 
 
-def register_all(agent: AgentT) -> dict[str, Any]:
-    """Register every core tool on ``agent``; return policy-name → function map."""
+def _module_tool_name(mod: Any) -> str:
+    """Each binding module is named after the single policy tool it registers."""
+    return mod.__name__.rpartition(".")[2]
+
+
+def register_all(agent: AgentT, *, exclude: frozenset[str] = frozenset()) -> dict[str, Any]:
+    """Register every core tool on ``agent``; return policy-name → function map.
+
+    ``exclude`` names tools that must not be registered at all (the ``@agent.tool``
+    decorator registers eagerly, so excluded modules are skipped before calling).
+    """
     mapping: dict[str, Any] = {}
     for mod in _MODULES:
+        if _module_tool_name(mod) in exclude:
+            continue
         mapping.update(mod.register(agent))
-    missing = [n for n in CORE_TOOL_NAMES if n not in mapping]
+    missing = [n for n in CORE_TOOL_NAMES if n not in mapping and n not in exclude]
     if missing:
         raise RuntimeError(f"tool registration missing: {missing}")
     return mapping

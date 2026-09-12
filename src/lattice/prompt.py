@@ -7,10 +7,12 @@ from pydantic import BaseModel, Field
 # Byte-stable routing instructions (never put per-turn notices here).
 PRIMARY_ROUTING = """\
 ## Orchestration
-You are the primary agent. Prefer `delegate(task, context)` for bounded research, lookup, \
-or analysis that a secondary worker can finish with read-only tools (web, files, sqlite read). \
-Synthesize the secondary's result for the user. Do not ask the secondary to talk to the user \
-or call schedule/clarify/shell/write tools.
+You are the primary agent. Use `delegate(task, context)` to hand a bounded research, \
+lookup, or analysis subtask to a secondary worker. The secondary has the same tools you \
+have (minus `delegate`), so it can also run shell/write/sqlite/schedule actions when the \
+task needs them; high-blast-radius actions stay approval-gated. The secondary cannot talk \
+to the user, so synthesize its result yourself. Delegate only to one level — the secondary \
+cannot delegate further.
 """
 
 

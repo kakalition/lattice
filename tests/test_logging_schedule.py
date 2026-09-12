@@ -211,6 +211,165 @@ def test_secondary_refuses_nested_delegate(tmp_path: Path) -> None:
     assert "nested" in out
 
 
+def test_secondary_registers_all_primary_tools_except_delegate() -> None:
+    from pydantic_ai import Agent
+
+    from lattice.agents.secondary import SECONDARY_TOOL_NAMES, _build_secondary_agent
+    from lattice.config import LatticeSettings
+    from lattice.deps import CORE_TOOL_NAMES
+    from lattice.tools.agent import register_all
+
+    primary = Agent("test")
+    primary_map = register_all(primary)
+    assert set(primary_map) == set(CORE_TOOL_NAMES)
+    assert set(primary_map) - {"delegate"} == set(SECONDARY_TOOL_NAMES)
+
+    settings = LatticeSettings(home=Path("/tmp/lattice-secondary-parity"))
+    secondary = _build_secondary_agent(settings, "test")
+    secondary_tools = set(secondary._function_toolset.tools.keys())
+    primary_tool_fns = {f.__name__ for f in primary_map.values()}
+
+    # Same capability surface as the primary, minus the dispatch entry.
+    assert secondary_tools == primary_tool_fns - {"delegate_tool"}
+    assert "delegate" not in secondary_tools
+
+
+def test_secondary_enabled_tools_derive_from_primary_policy() -> None:
+    import asyncio
+
+    from lattice.agent_app import TurnDeps
+    from lattice.agents.secondary import run_secondary
+    from lattice.config import LatticeSettings
+    from lattice.events import NullTurnEvents
+    from lattice.hitl import AutoApproveHitl
+    from lattice.mcp import McpHostManager
+    from lattice.profiles.load import Profile
+    from lattice.session import SessionStore
+    from lattice.sqlite import SqlitePool, SqliteRegistry
+
+    class _Mem:
+        async def search(self, *a, **k):
+            return []
+
+        async def add(self, *a, **k):
+            return "x"
+
+        async def update(self, *a, **k):
+            return None
+
+        async def forget(self, *a, **k):
+            return None
+
+        async def sync_turn(self, *a, **k):
+            return None
+
+    settings = LatticeSettings(home=Path("/tmp/lattice-secondary-policy"))
+    registry = SqliteRegistry(settings)
+    deps = TurnDeps(
+        settings=settings,
+        profile=Profile(id="default"),
+        hitl=AutoApproveHitl(approve_all=True),
+        session=SessionStore(Path("/tmp/lattice-secondary-policy/state.db")),
+        session_id="s",
+        memory=_Mem(),  # type: ignore[arg-type]
+        sqlite_registry=registry,
+        sqlite_pool=SqlitePool(registry),
+        mcp=McpHostManager(),
+        events=NullTurnEvents(),
+        workspace=Path("/tmp/lattice-secondary-policy"),
+        # Primary policy denies shell and includes delegate; neither may leak through.
+        enabled_tools=["web_search", "delegate"],
+        delegate_depth=0,
+    )
+
+    captured: dict[str, list[str]] = {}
+
+    class _Agent:
+        async def run(self, *a, **k):
+            captured["enabled"] = list(k["deps"].enabled_tools)
+
+            class _R:
+                output = "ok"
+
+            return _R()
+
+    import lattice.agents.secondary as secondary
+
+    original = secondary.get_secondary_agent
+    secondary.get_secondary_agent = lambda s: _Agent()  # type: ignore[assignment]
+    try:
+        out = asyncio.run(run_secondary(deps, task="find x"))
+    finally:
+        secondary.get_secondary_agent = original  # type: ignore[assignment]
+
+    assert out == "ok"
+    assert captured["enabled"] == ["web_search"]
+
+
+def test_secondary_gated_tool_is_hitl_gated_when_enabled(tmp_path: Path) -> None:
+    import asyncio
+
+    from pydantic_ai import Agent, RunContext
+
+    from lattice.agent_app import TurnDeps
+    from lattice.config import LatticeSettings
+    from lattice.events import NullTurnEvents
+    from lattice.hitl import ApprovalDecision, ApprovalRequest, AutoApproveHitl
+    from lattice.mcp import McpHostManager
+    from lattice.profiles.load import Profile
+    from lattice.session import SessionStore
+    from lattice.sqlite import SqlitePool, SqliteRegistry
+    from lattice.tools.agent import register_all
+
+    class _Mem:
+        async def search(self, *a, **k):
+            return []
+
+        async def add(self, *a, **k):
+            return "x"
+
+        async def update(self, *a, **k):
+            return None
+
+        async def forget(self, *a, **k):
+            return None
+
+        async def sync_turn(self, *a, **k):
+            return None
+
+    class _DenyingHitl(AutoApproveHitl):
+        def __init__(self) -> None:
+            super().__init__(approve_all=True)
+            self.seen: list[str] = []
+
+        async def approve(self, req: ApprovalRequest) -> ApprovalDecision:
+            self.seen.append(req.tool_name)
+            return ApprovalDecision.DENY
+
+    settings = LatticeSettings(home=tmp_path)
+    registry = SqliteRegistry(settings)
+    hitl = _DenyingHitl()
+    deps = TurnDeps(
+        settings=settings,
+        profile=Profile(id="default"),
+        hitl=hitl,
+        session=SessionStore(tmp_path / "state.db"),
+        session_id="s",
+        memory=_Mem(),  # type: ignore[arg-type]
+        sqlite_registry=registry,
+        sqlite_pool=SqlitePool(registry),
+        mcp=McpHostManager(),
+        events=NullTurnEvents(),
+        workspace=tmp_path,
+        enabled_tools=["sqlite_unregister"],
+    )
+    ctx = RunContext(deps=deps, model=None, usage=None, prompt=None)  # type: ignore[arg-type]
+    tool = register_all(Agent("test"), exclude=frozenset({"delegate"}))["sqlite_unregister"]
+    out = asyncio.run(tool(ctx, "notes"))
+    assert out == "denied: deny"
+    assert hitl.seen == ["sqlite_unregister"]
+
+
 def test_session_dicts_to_history() -> None:
     from lattice.session_history import session_dicts_to_history
 
