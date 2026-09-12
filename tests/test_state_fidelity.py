@@ -207,6 +207,44 @@ async def test_todo_round_trip_across_turns(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_system_prompt_resent_on_second_turn(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    store = SessionStore(tmp_path / "state.db")
+
+    first = await run_turn(
+        Inbound(text="one", profile_id="default", channel="cli", user_id="u"),
+        settings=settings,
+        session_store=store,
+        model=_ScriptedModel([_text("ok")]),
+        stream=False,
+        memory=InMemoryMemory("t"),
+    )
+
+    second_model = _ScriptedModel([_text("ok")])
+    await run_turn(
+        Inbound(
+            text="two",
+            profile_id="default",
+            channel="cli",
+            user_id="u",
+            session_id=first.session_id,
+        ),
+        settings=settings,
+        session_store=store,
+        model=second_model,
+        stream=False,
+        memory=InMemoryMemory("t"),
+    )
+
+    kinds = {
+        part.get("part_kind")
+        for message in second_model.seen[0]
+        for part in message.get("parts", [])
+    }
+    assert "system-prompt" in kinds
+
+
+@pytest.mark.asyncio
 async def test_todo_survives_compression(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(turn_mod, "Summarizer", _FailingSummarizer)
     settings = _settings(tmp_path)

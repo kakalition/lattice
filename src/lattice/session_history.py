@@ -41,6 +41,7 @@ def _attach_cache_point(history: list[ModelMessage], ttl: Literal["5m", "1h"]) -
 def session_dicts_to_history(
     messages: list[dict[str, Any]],
     *,
+    system_prompt: str | None = None,
     cache_boundary: bool = False,
     cache_ttl: Literal["5m", "1h"] = "5m",
 ) -> list[ModelMessage]:
@@ -48,6 +49,12 @@ def session_dicts_to_history(
 
     ``system`` messages carry the compression summary and must round-trip so the
     summary survives replay instead of being silently discarded.
+
+    ``system_prompt`` (the static stable prompt: persona, skill index, runtime
+    context, safety base) is prepended as a leading system request on continued
+    sessions. pydantic-ai injects ``Agent(system_prompt=...)`` only when
+    ``message_history`` is empty, so without this every turn after the first model
+    request of a session would silently lose the prompt.
     """
     history: list[ModelMessage] = []
     for msg in messages:
@@ -65,6 +72,17 @@ def session_dicts_to_history(
             history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
         elif role == "system":
             history.append(ModelRequest(parts=[SystemPromptPart(content=content)]))
+    if system_prompt and history and not _has_system_prompt(history):
+        history.insert(0, ModelRequest(parts=[SystemPromptPart(content=system_prompt)]))
     if cache_boundary and history:
         _attach_cache_point(history, cache_ttl)
     return history
+
+
+def _has_system_prompt(history: list[ModelMessage]) -> bool:
+    """True when any request already carries a ``SystemPromptPart``."""
+    return any(
+        isinstance(message, ModelRequest)
+        and any(isinstance(part, SystemPromptPart) for part in message.parts)
+        for message in history
+    )

@@ -237,6 +237,14 @@ class TelegramBot:
             self._sessions[uid] = context.args[0]
             await _reply(update, f"resumed {context.args[0]}")
 
+        async def on_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+            uid = update.effective_user.id if update.effective_user else 0
+            if uid in self._busy:
+                await _reply(update, "A turn is running — finish it or /stop first.")
+                return
+            self._sessions.pop(uid, None)
+            await _reply(update, "New session — the previous one is in /sessions.")
+
         async def on_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             args = context.args or []
             if args and args[0].lower() == "remove":
@@ -633,6 +641,7 @@ class TelegramBot:
         app.add_handler(CommandHandler("stop", on_stop))
         app.add_handler(CommandHandler("sessions", on_sessions))
         app.add_handler(CommandHandler("resume", on_resume))
+        app.add_handler(CommandHandler("reset", on_reset))
         app.add_handler(CommandHandler("profile", on_profile))
         app.add_handler(CommandHandler("soul", on_soul))
         app.add_handler(CommandHandler("name", on_name))

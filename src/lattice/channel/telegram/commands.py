@@ -8,6 +8,7 @@ COMMANDS = [
     ("stop", "Cancel current turn / HITL"),
     ("sessions", "List recent sessions"),
     ("resume", "Resume session by id"),
+    ("reset", "Start a new session (keeps the old one)"),
     ("forget", "Forget a memory id"),
     ("model", "Show or set primary model"),
     ("tools", "List enabled tool policy"),

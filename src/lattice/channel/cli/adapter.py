@@ -167,7 +167,7 @@ class CliAdapter:
             if line == "/help":
                 self.console.print(
                     "/profile <id>  /profile remove <id>  /model [id|clear]  "
-                    "/sessions  /resume <id>  /stop  /quit"
+                    "/sessions  /resume <id>  /reset  /stop  /quit"
                 )
                 continue
             if line == "/sessions":
@@ -185,6 +185,13 @@ class CliAdapter:
                     self.console.print("cancelling current turn…")
                 else:
                     self.console.print("nothing to stop")
+                continue
+            if line == "/reset":
+                if self._busy:
+                    self.console.print("[yellow]busy — finish or /stop the current turn first[/]")
+                else:
+                    self.session_id = None
+                    self.console.print("new session — the previous one is in /sessions")
                 continue
 
             if self._busy:

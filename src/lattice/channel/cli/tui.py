@@ -94,7 +94,7 @@ class LatticeTui(App[None]):
         yield RichLog(id="log", markup=True)
         yield Static(f"profile={self.profile_id}", id="status")
         yield Input(
-            placeholder=f"Message {brand_label(glyph=False)}… (/profile, /quit)", id="input"
+            placeholder=f"Message {brand_label(glyph=False)}… (/profile, /reset, /quit)", id="input"
         )
         yield Footer()
 
@@ -139,6 +139,13 @@ class LatticeTui(App[None]):
                 log.write("[yellow]cancelling current turn…[/]")
             else:
                 log.write("[yellow]nothing to stop[/]")
+            return
+        if text == "/reset":
+            if self._busy:
+                log.write("[yellow]busy — finish or /stop the current turn first[/]")
+            else:
+                self.session_id = None
+                log.write("[cyan]new session — the previous one is in /sessions[/]")
             return
         if self._busy:
             log.write("[yellow]busy — message ignored (use queue in REPL adapter)[/]")

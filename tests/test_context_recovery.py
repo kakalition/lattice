@@ -5,6 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from pydantic_ai.messages import (
+    CachePoint,
+    ModelRequest,
+    SystemPromptPart,
+    TextContent,
+    UserPromptPart,
+)
 
 from lattice.context import compress
 from lattice.session_history import session_dicts_to_history
@@ -88,3 +95,53 @@ async def test_compressed_history_carries_summary_as_user_turn() -> None:
         for message in history
         for part in message.parts
     )
+
+
+def test_system_prompt_prepended_on_non_empty_history() -> None:
+    history = session_dicts_to_history(
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
+        system_prompt="SYS",
+    )
+    first = history[0]
+    assert isinstance(first, ModelRequest)
+    assert isinstance(first.parts[0], SystemPromptPart)
+    assert first.parts[0].content == "SYS"
+
+
+def test_no_system_prompt_added_on_empty_history() -> None:
+    assert session_dicts_to_history([], system_prompt="SYS") == []
+
+
+def test_stored_system_message_is_not_duplicated() -> None:
+    history = session_dicts_to_history(
+        [{"role": "system", "content": "stored"}, {"role": "user", "content": "hi"}],
+        system_prompt="SYS",
+    )
+    system_texts = [
+        part.content
+        for message in history
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, SystemPromptPart)
+    ]
+    assert system_texts == ["stored"]
+
+
+def test_cache_point_lands_on_newest_user_prompt_with_system_prefix() -> None:
+    history = session_dicts_to_history(
+        [
+            {"role": "user", "content": "old"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "new"},
+        ],
+        system_prompt="SYS",
+        cache_boundary=True,
+    )
+    newest = history[-1]
+    assert isinstance(newest, ModelRequest)
+    part = newest.parts[0]
+    assert isinstance(part, UserPromptPart)
+    assert isinstance(part.content, list)
+    assert isinstance(part.content[0], TextContent)
+    assert part.content[0].content == "new"
+    assert isinstance(part.content[-1], CachePoint)

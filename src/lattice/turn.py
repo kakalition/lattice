@@ -408,6 +408,7 @@ async def run_turn(
     # History before this turn (cacheable prefix); current user saved separately
     history = session_dicts_to_history(
         messages,
+        system_prompt=system_prompt,
         cache_boundary=settings.agent.prompt_cache and supports_explicit_cache(model_obj),
         cache_ttl=settings.agent.prompt_cache_ttl,
     )
@@ -510,6 +511,7 @@ async def run_turn(
         nonlocal history
         history = session_dicts_to_history(
             messages,
+            system_prompt=system_prompt,
             cache_boundary=settings.agent.prompt_cache and supports_explicit_cache(model_obj),
             cache_ttl=settings.agent.prompt_cache_ttl,
         )
