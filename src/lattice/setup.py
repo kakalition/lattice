@@ -70,7 +70,7 @@ with `language="python"` and `args=[...]`.
    `DROP`/`ALTER`/`TRUNCATE`/`ATTACH`, or `DELETE` without a `WHERE`.
    Everyday `INSERT`/`UPDATE`/`CREATE`, upserts, and row deletes run free.
 6. `register NAME PATH [--read-only]` / `unregister NAME` — registry persists under
-   `.lattice/sqlite/databases.json`; `unregister` is HITL-gated.
+   `.lattice/sqlite/databases.yaml`; `unregister` is HITL-gated.
 
 Example:
 `execute_script(language="python", path="skills/sqlite-admin/scripts/sqlite.py", args=["query", "ledger", "SELECT * FROM t LIMIT 5"])`

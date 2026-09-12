@@ -154,6 +154,25 @@ async def test_execute_script_passes_stdin_and_env(tmp_path: Path) -> None:
     assert "env from-env" in result.stdout
 
 
+@pytest.mark.asyncio
+async def test_execute_script_sets_lattice_home(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    code = "import os\nprint('home', os.environ.get('LATTICE_HOME', ''))\n"
+    result = await execute_script(
+        language="python",
+        code=code,
+        workspace=workspace,
+        home=home,
+        cfg=ScriptsConfig(),
+        timeout=15,
+    )
+    assert result.exit_code == 0
+    assert f"home {home.resolve()}" in result.stdout
+
+
 def test_new_skill_starters_present() -> None:
     from lattice.setup import SKILL_STARTERS
 

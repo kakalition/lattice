@@ -233,6 +233,9 @@ async def execute_script(
         "TMPDIR": "/tmp" if use_bwrap else str(scripts_root / ".tmp"),
         "LATTICE_SCRIPTS": str(scripts_root),
         "LATTICE_WORKSPACE": str(workspace.resolve()),
+        # Skill scripts resolve ``$LATTICE_HOME`` for registry/jobs/soul writes;
+        # without it they fall back to cwd/.lattice, which is the workspace, not home.
+        "LATTICE_HOME": str(home.expanduser().resolve()),
     }
     if env_extra:
         env.update({str(k): str(v) for k, v in env_extra.items()})

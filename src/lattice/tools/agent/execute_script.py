@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -72,6 +73,14 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
 
         async def _op() -> str:
             try:
+                env_extra: dict[str, str] = {
+                    "LATTICE_SQLITE_ROW_LIMIT": str(ctx.deps.settings.sqlite.query_row_limit),
+                }
+                allow = ctx.deps.profile.sqlite_allow
+                if allow is not None:
+                    # The sqlite-admin script enforces the same profile allowlist
+                    # as the native sqlite_* tools; without this it would see all.
+                    env_extra["LATTICE_SQLITE_ALLOW"] = json.dumps(allow)
                 result = await _execute_script(
                     language=language,
                     code=code,
@@ -81,6 +90,7 @@ def register(toolset: ToolsetT) -> dict[str, Any]:
                     home=ctx.deps.settings.home,
                     cfg=ctx.deps.settings.scripts,
                     argv_extra=args,
+                    env_extra=env_extra,
                 )
                 return truncate_result(format_script_result(result))
             except Exception as exc:

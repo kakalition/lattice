@@ -2,8 +2,9 @@
 """Named multi-SQLite manager (stdlib only).
 
 Bundled with the `sqlite-admin` skill; run through Lattice's ``execute_script``.
-Registry lives in ``$LATTICE_HOME/sqlite/databases.json`` (written through by the
-runtime). Never touches Lattice session ``state.db``.
+Registry lives in ``$LATTICE_HOME/sqlite/databases.yaml`` (the same file the
+runtime's ``sqlite_*`` tools read and write). Never touches Lattice session
+``state.db``.
 
 Usage:
   sqlite.py list
@@ -45,14 +46,115 @@ def home_dir() -> Path:
 
 
 def store_path() -> Path:
-    return home_dir() / "sqlite" / "databases.json"
+    return home_dir() / "sqlite" / "databases.yaml"
+
+
+def _scalar(value: str) -> str:
+    """Decode a YAML scalar (plain, single- or double-quoted)."""
+    value = value.rstrip()
+    if not value:
+        return ""
+    quote = value[0]
+    if quote in "\"'":
+        chars: list[str] = []
+        i = 1
+        while i < len(value):
+            ch = value[i]
+            if quote == "'":
+                if ch == "'":
+                    if i + 1 < len(value) and value[i + 1] == "'":
+                        chars.append("'")
+                        i += 2
+                        continue
+                    break
+                chars.append(ch)
+                i += 1
+            else:
+                if ch == "\\" and i + 1 < len(value):
+                    chars.append(ch)
+                    chars.append(value[i + 1])
+                    i += 2
+                    continue
+                if ch == '"':
+                    break
+                chars.append(ch)
+                i += 1
+        inner = "".join(chars)
+        if quote == '"':
+            try:
+                return json.loads(f'"{inner}"')
+            except json.JSONDecodeError:
+                return inner
+        return inner
+    # Plain scalar: an inline " #" starts a comment.
+    hash_idx = value.find(" #")
+    if hash_idx != -1:
+        value = value[:hash_idx].rstrip()
+    return value
+
+
+def _key_value(line: str) -> tuple[str, str]:
+    idx = line.find(":")
+    if idx == -1:
+        return line.strip(), ""
+    return line[:idx].strip(), line[idx + 1 :].strip()
+
+
+def _parse_yaml(text: str) -> dict[str, dict]:
+    """Parse the registry's two-level YAML shape without PyYAML.
+
+    Understands both ``databases:\\n  name:\\n    path: …`` and a flat
+    ``name: path`` mapping. Only path/read_only are meaningful.
+    """
+    out: dict[str, dict] = {}
+    section: str | None = None
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        key, value = _key_value(raw.strip())
+        key = _scalar(key)
+        if indent == 0:
+            if key == "databases" and not value:
+                section = None
+                continue
+            # Flat form: name: path (or name: {…} is unsupported here).
+            if value:
+                out[key] = {"path": _scalar(value), "read_only": False}
+            else:
+                section = key
+            continue
+        if indent == 2:
+            section = key
+            out.setdefault(section, {})
+            continue
+        if section is not None:
+            if key == "path":
+                out[section]["path"] = _scalar(value)
+            elif key == "read_only":
+                out[section]["read_only"] = _scalar(value).lower() in {"true", "yes", "1"}
+    return out
+
+
+def _yaml_key(name: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        return name
+    return json.dumps(name, ensure_ascii=False)
 
 
 def load_registry() -> dict[str, dict]:
     path = store_path()
     if not path.is_file():
         return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        raw = yaml.safe_load(text)
+        if not isinstance(raw, dict):
+            raw = {}
+    except Exception:
+        raw = _parse_yaml(text)
     data = raw.get("databases", raw) if isinstance(raw, dict) else {}
     out: dict[str, dict] = {}
     for name, cfg in (data or {}).items():
@@ -68,13 +170,12 @@ def load_registry() -> dict[str, dict]:
 def save_registry(databases: dict[str, dict]) -> None:
     path = store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        name: {"path": cfg["path"], "read_only": bool(cfg.get("read_only"))}
-        for name, cfg in sorted(databases.items())
-    }
-    path.write_text(
-        json.dumps({"databases": payload}, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    lines = ["databases:"]
+    for name, cfg in sorted(databases.items()):
+        lines.append(f"  {_yaml_key(name)}:")
+        lines.append(f"    path: {json.dumps(str(cfg['path']), ensure_ascii=False)}")
+        lines.append(f"    read_only: {'true' if cfg.get('read_only') else 'false'}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def allowlist() -> list[str] | None:
