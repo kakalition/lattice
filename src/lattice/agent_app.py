@@ -45,12 +45,18 @@ def clear_toolset_cache() -> None:
 
 
 def build_prompt_bundle(
-    profile: Profile, skills_entries: list[tuple[str, str]], notices: list[str]
+    profile: Profile,
+    skills_entries: list[tuple[str, str]],
+    notices: list[str],
+    *,
+    runtime_context: str = "",
 ) -> PromptBundle:
     base = system_soul()
     persona = apply_name(profile.soul.strip(), profile.persona_name)
     identity = f"{base}\n\n{persona}".strip() if persona else base
-    context = profile.user_notes.strip()
+    # Invariant runtime facts join user notes in the cacheable prefix; only the
+    # volatile clock/ledger stay in ``notices``.
+    context = "\n\n".join(p for p in (profile.user_notes.strip(), runtime_context.strip()) if p)
     return PromptBundle(
         identity=identity,
         context=context,

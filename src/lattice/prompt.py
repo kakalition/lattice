@@ -38,25 +38,25 @@ class PromptBundle(BaseModel):
         return "\n".join(f"[notice] {n}" for n in self.notices)
 
 
-def build_runtime_notice(
+def build_runtime_context(
     *,
     workspace: str,
-    now: str,
     timezone: str,
     databases: list[tuple[str, str]],
     profile_id: str,
     preferred_skills: list[str],
     user_tools: list[str],
 ) -> str:
-    """Compact per-turn environment context (volatile tail, never cached prefix).
+    """Invariant environment + rules, placed in the cacheable system prefix.
 
     Directly targets the observed waste: repeated ``find /`` / ``ls`` scans,
     stray ``cd``, and registering a relative DB path against the wrong root.
-    Keep it to a few lines.
+    Keep it to a few lines. Only the clock varies per turn (see
+    :func:`build_runtime_notice`), so this text stays byte-stable and cacheable.
     """
     dbs = "; ".join(f"{name} -> {path}" for name, path in databases) or "(none registered)"
     lines = [
-        f"Runtime: workspace={workspace}; now={now} ({timezone}); profile={profile_id}",
+        f"Runtime: workspace={workspace}; timezone={timezone}; profile={profile_id}",
         f"Registered DBs: {dbs}",
     ]
     if user_tools:
@@ -75,6 +75,12 @@ def build_runtime_notice(
         "inspect databases; register an existing workspace DB by its relative path."
     )
     return "\n".join(lines)
+
+
+def build_runtime_notice(*, now: str, timezone: str = "") -> str:
+    """Per-turn volatile clock line; everything else is invariant (see above)."""
+    suffix = f" ({timezone})" if timezone else ""
+    return f"Clock: now={now}{suffix}"
 
 
 def build_action_notice(actions: list[Any], *, limit: int = 15) -> str:
@@ -102,6 +108,35 @@ def build_action_notice(actions: list[Any], *, limit: int = 15) -> str:
             suffix += " -> " + ", ".join(str(a) for a in artifacts)
         lines.append(f"- {tool}{suffix} → {'ok' if ok else 'failed'}")
     return "\n".join(lines)
+
+
+def build_evidence_notice(actions: list[Any], *, limit: int = 8, max_bytes: int = 4000) -> str:
+    """Render the most recent bounded evidence into the volatile tail.
+
+    Evidence keeps cache locality (never the cached prefix) and stays out of the
+    summarizer transcript. Total rendered bytes are capped so growth is bounded.
+    """
+    if not actions:
+        return ""
+    lines: list[str] = []
+    used = 0
+    for action in reversed(actions):
+        evidence = (
+            action.get("evidence") if isinstance(action, dict) else getattr(action, "evidence", "")
+        )
+        if not evidence:
+            continue
+        line = f"- {evidence}"
+        if used + len(line) > max_bytes:
+            break
+        lines.append(line)
+        used += len(line)
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return ""
+    lines.reverse()
+    return "Recent evidence (already read; do not repeat unless stale):\n" + "\n".join(lines)
 
 
 def build_skill_index_xml(entries: list[tuple[str, str]]) -> str:

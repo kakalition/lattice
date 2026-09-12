@@ -9,6 +9,7 @@ bodies and full tool results are never stored.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -34,10 +35,13 @@ _TARGET_KEYS = (
     "prompt",
 )
 _ARTIFACT_TOOLS = frozenset({"write_file", "edit_file", "generate_chart", "generate_pdf"})
+# Tools whose result is worth a bounded snippet in the cross-turn ledger.
+_EVIDENCE_TOOLS = frozenset({"read_file", "sqlite_query", "web_fetch"})
 _SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd|bearer)\b\s*[:=]?\s*\S+")
 _MAX_TARGET = 120
 _MAX_OUTCOME = 120
 _MAX_ARTIFACT = 160
+_MAX_EVIDENCE = 600
 
 
 class ActionRecord(BaseModel):
@@ -46,6 +50,9 @@ class ActionRecord(BaseModel):
     ok: bool = True
     outcome: str = ""
     artifacts: list[str] = Field(default_factory=list)
+    # Bounded snippet/hash of a read/query result, so the model need not re-run
+    # the same discovery next turn. Never a full file/result body.
+    evidence: str = ""
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -93,6 +100,17 @@ def _artifacts_from_args(tool: str, raw: Any) -> list[str]:
     return out
 
 
+def _evidence_from_result(tool: str, target: str, content: Any) -> str:
+    """Bounded, redacted evidence for a read/query result."""
+    if tool not in _EVIDENCE_TOOLS:
+        return ""
+    text = content if isinstance(content, str) else str(content)
+    digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()[:12]
+    head = _clip(text, _MAX_EVIDENCE)
+    prefix = f"{target} sha={digest}" if target else f"sha={digest}"
+    return f"{prefix} {head}".strip()
+
+
 def _result_ok(content: Any, part: ToolReturnPart) -> bool:
     declared = getattr(part, "outcome", None)
     if declared == "failed":
@@ -121,13 +139,15 @@ def actions_from_messages(
                 call = calls.pop(call_id, None)
                 tool = part.tool_name or (call.tool_name if call else "?")
                 raw_args = call.args if call is not None else {}
+                target = _target_from_args(raw_args)
                 records.append(
                     ActionRecord(
                         tool=tool,
-                        target=_target_from_args(raw_args),
+                        target=target,
                         ok=_result_ok(part.content, part),
                         outcome=_clip(part.content, _MAX_OUTCOME),
                         artifacts=_artifacts_from_args(tool, raw_args),
+                        evidence=_evidence_from_result(tool, target, part.content),
                     )
                 )
     if media and records:
@@ -135,3 +155,25 @@ def actions_from_messages(
         extra = [_clip(str(p), _MAX_ARTIFACT) for p in media if str(p) not in existing]
         records[-1].artifacts.extend(extra)
     return records[-max_actions:]
+
+
+def actions_from_tool_trace(
+    tools: list[Any],
+    *,
+    media: list[Path] | None = None,
+    max_actions: int = 40,
+) -> list[ActionRecord]:
+    """Synthesize records from turn tool events when the run never returned.
+
+    On timeout/cancel/budget/post-tool provider error ``run_messages`` is empty,
+    but the tools already ran and may have had side effects the next turn must
+    know about. ``tools`` are ``turn_record.ToolRecord``-shaped (name + ok).
+    """
+    records = [
+        ActionRecord(tool=str(getattr(t, "name", "?")), ok=bool(getattr(t, "ok", True)))
+        for t in tools
+    ]
+    records = records[-max_actions:]
+    if media and records:
+        records[-1].artifacts.extend(_clip(str(p), _MAX_ARTIFACT) for p in media)
+    return records

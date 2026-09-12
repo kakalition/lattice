@@ -114,6 +114,12 @@ class AgentConfig(BaseModel):
     # No-op for providers without explicit cache control (OpenAI/DeepSeek auto-cache).
     prompt_cache: bool = True
     prompt_cache_ttl: Literal["5m", "1h"] = "5m"
+    # Replay bounded evidence (path + hash + snippet) for recent reads/queries in
+    # the volatile tail. Off by default: changes prompt bytes, so validate with
+    # the offline corpus before enabling.
+    replay_evidence: bool = False
+    # Model context window override; None = resolve from the model profile.
+    context_window_tokens: int | None = None
 
     @property
     def turn_timeout_seconds(self) -> int:
@@ -340,6 +346,11 @@ agent:
   # Explicit prompt caching for OpenRouter Anthropic/Gemini models.
   # prompt_cache: true
   # prompt_cache_ttl: 5m   # 5m | 1h (1h is Anthropic-only)
+  # Replay bounded evidence for recent reads/queries in the volatile tail.
+  # Changes prompt bytes; validate with `lattice eval run` before enabling.
+  # replay_evidence: false
+  # Model context window override; null = resolve from the model profile.
+  # context_window_tokens: null
 
 observability:
   # Append one structured JSON line per turn to <home>/logs/turns.jsonl.

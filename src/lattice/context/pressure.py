@@ -8,12 +8,29 @@ whose tokenizer diverges from the 4-chars/token default.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
+
+DEFAULT_MODEL_CONTEXT_TOKENS = 128_000
+
+
+def resolve_context_window(configured: int | None, model: Any) -> int:
+    """Explicit config wins; else the model profile's window; else 128k."""
+    if configured:
+        return int(configured)
+    try:
+        window = getattr(model, "context_window", None)
+    except Exception:
+        window = None
+    if window:
+        return int(window)
+    return DEFAULT_MODEL_CONTEXT_TOKENS
 
 
 class PressureConfig(BaseModel):
     ratio: float = 0.5
-    model_context_tokens: int = 128_000
+    model_context_tokens: int = DEFAULT_MODEL_CONTEXT_TOKENS
     chars_per_token: float = 4.0
 
     def threshold_chars(self) -> int:

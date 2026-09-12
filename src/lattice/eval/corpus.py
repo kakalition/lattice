@@ -33,6 +33,10 @@ class Expect(BaseModel):
     output_contains: list[str] = Field(default_factory=list)
     max_tool_calls: int | None = None
     max_requests: int | None = None
+    no_prompt_drift: bool = False
+    max_duration_ms: int | None = None
+    max_cost: float | None = None
+    max_ttft_ms: int | None = None
 
 
 class CorpusRow(BaseModel):
@@ -40,6 +44,15 @@ class CorpusRow(BaseModel):
     inbound: InboundSpec
     expect: Expect = Field(default_factory=Expect)
     cassette: str | None = None
+    # Additional turns run against the same session as ``inbound`` (multi-turn).
+    turns: list[InboundSpec] = Field(default_factory=list)
+    # Files seeded into the row workspace before the first turn, by relative path.
+    files: dict[str, str] = Field(default_factory=dict)
+    # Deterministic HITL decision for the row: "approve" | "deny" | None.
+    hitl_decision: str | None = None
+
+    def effective_turns(self) -> list[InboundSpec]:
+        return [self.inbound, *self.turns]
 
 
 def load_corpus(directory: Path) -> list[CorpusRow]:

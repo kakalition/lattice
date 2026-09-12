@@ -16,7 +16,7 @@ from pydantic_ai.messages import PartDeltaEvent, PartStartEvent, TextPart, TextP
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
 
-from lattice.action_ledger import actions_from_messages
+from lattice.action_ledger import actions_from_messages, actions_from_tool_trace
 from lattice.agent_app import (
     TurnDeps,
     build_memory_for_profile,
@@ -28,16 +28,21 @@ from lattice.channel.live_status import current_live_events
 from lattice.config import LatticeSettings, load_settings
 from lattice.context import PressureConfig, compress
 from lattice.context.index import build_workspace_context
+from lattice.context.pressure import resolve_context_window
 from lattice.events import NullTurnEvents, TurnEvents
 from lattice.hitl import AutoApproveHitl, HitlPort
 from lattice.mcp import McpHostManager
 from lattice.memory.worker import enqueue_sync
 from lattice.models import Inbound, Outbound
 from lattice.profiles import get_profile
-from lattice.prompt import build_action_notice, build_runtime_notice
+from lattice.prompt import (
+    build_action_notice,
+    build_evidence_notice,
+    build_runtime_context,
+    build_runtime_notice,
+)
 from lattice.providers import (
     Summarizer,
-    build_openai_model,
     classify_provider_error,
     recovery_action,
 )
@@ -46,6 +51,7 @@ from lattice.providers.caching import (
     session_routing_settings,
     supports_explicit_cache,
 )
+from lattice.providers.openai_compat import get_cached_openai_model
 from lattice.providers.settings import resolve_model_id
 from lattice.providers.usage import usage_to_dict
 from lattice.runtime import set_cwd
@@ -216,7 +222,7 @@ async def run_turn(
         profile_model=profile.primary_model or profile.model,
         sticky_model=sticky_model,
     )
-    model_obj = model or build_openai_model(settings, primary_id)
+    model_obj = model or get_cached_openai_model(settings, primary_id)
     summarizer_id = settings.agent.summarizer_model or primary_id
 
     notices: list[str] = []
@@ -258,7 +264,11 @@ async def run_turn(
             f"{user_content}\n\n[media] {paths}\n(Use the ocr tool on image paths to extract text.)"
         )
 
-    pressure = PressureConfig(ratio=settings.agent.context_pressure_ratio)
+    context_window = resolve_context_window(settings.agent.context_window_tokens, model_obj)
+    pressure = PressureConfig(
+        ratio=settings.agent.context_pressure_ratio,
+        model_context_tokens=context_window,
+    )
     # Include the pending user turn in the estimate: the stored transcript alone
     # under-counts and fires compression late. Calibrate against the last
     # request's real token count when available.
@@ -306,27 +316,29 @@ async def run_turn(
         now = datetime.now(ZoneInfo(tz_name)).isoformat(timespec="minutes")
     except Exception:
         now = datetime.now().astimezone().isoformat(timespec="minutes")
-    notices.append(
-        build_runtime_notice(
-            workspace=str(workspace),
-            now=now,
-            timezone=tz_name,
-            databases=[(d.name, str(d.path)) for d in registry.list()],
-            profile_id=profile.id,
-            preferred_skills=list(profile.skills_prefer),
-            user_tools=[spec.name for spec in user_specs],
-        )
+    runtime_context = build_runtime_context(
+        workspace=str(workspace),
+        timezone=tz_name,
+        databases=[(d.name, str(d.path)) for d in registry.list()],
+        profile_id=profile.id,
+        preferred_skills=list(profile.skills_prefer),
+        user_tools=[spec.name for spec in user_specs],
     )
+    notices.append(build_runtime_notice(now=now, timezone=tz_name))
     action_notice = build_action_notice(existing.get("actions") if existing else None)
     if action_notice:
         notices.append(action_notice)
+    if settings.agent.replay_evidence:
+        evidence_notice = build_evidence_notice(existing.get("actions") if existing else None)
+        if evidence_notice:
+            notices.append(evidence_notice)
     # Cheap discovery facts so the model skips its own ls/find/schema warm-up.
     workspace_context = await build_workspace_context(
         workspace, registry, pool, allow=profile.sqlite_allow
     )
     if workspace_context:
         notices.append(workspace_context)
-    prompt = build_prompt_bundle(profile, entries, notices)
+    prompt = build_prompt_bundle(profile, entries, notices, runtime_context=runtime_context)
     system_prompt = prompt.stable_system_prompt()
     enabled = resolve_enabled_tools(
         settings,
@@ -383,6 +395,7 @@ async def run_turn(
         user_tools=user_specs,
         user_id=inbound.user_id,
         channel=inbound.channel,
+        turn_id=turn_id,
     )
 
     messages.append({"role": "user", "content": user_content})
@@ -430,11 +443,17 @@ async def run_turn(
     def _usage_payload() -> dict[str, Any]:
         data = usage_to_dict(usage, model=primary_id)
         # Persist the live context size so the next turn can calibrate pressure.
-        last_tokens = getattr(getattr(agent, "model", None), "last_input_tokens", 0)
+        # Tokens and chars must describe the *same* real request; the persisted
+        # transcript drops tool results, so read the serialized request length the
+        # logging wrapper captured instead of re-estimating from ``messages``.
+        model_ref = getattr(agent, "model", None)
+        last_tokens = getattr(model_ref, "last_input_tokens", 0)
+        last_chars = int(getattr(model_ref, "last_request_chars", 0) or 0)
         data["last_input_tokens"] = int(last_tokens or 0)
-        data["last_context_chars"] = pressure.estimate_chars(
-            messages, extra_chars=len(user_content)
-        )
+        if last_chars <= 0:
+            # Non-logging model (e.g. tests): best-effort transcript estimate.
+            last_chars = pressure.estimate_chars(messages)
+        data["last_context_chars"] = last_chars
         return data
 
     usage_payload = _usage_payload()
@@ -613,6 +632,10 @@ async def run_turn(
         context_record.after_messages = len(messages)
         await pool.close_all()
         actions = actions_from_messages(run_messages, media=list(deps.outbound_media))
+        if not actions and trace.tools:
+            # The run never returned a message list (timeout/cancel/budget/provider
+            # error) but tools already executed: persist their side effects.
+            actions = actions_from_tool_trace(trace.tools, media=list(deps.outbound_media))
         if actions:
             with contextlib.suppress(Exception):
                 await store.append_actions(session_id, actions)
@@ -628,7 +651,10 @@ async def run_turn(
         )
 
     media = [p for p in deps.outbound_media if p.exists()]
-    if media_capable:
+    # Only walk the workspace when a media-capable tool actually executed; most
+    # turns enable shell/write_file but never write anything.
+    ran_media_tool = any(t.name in _MEDIA_TOOLS for t in trace.tools)
+    if media_capable and ran_media_tool:
         existing_media = {p.resolve() for p in media}
         media.extend(
             discover_turn_media(

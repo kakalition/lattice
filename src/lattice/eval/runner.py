@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -93,19 +94,35 @@ class CountingHitl(AutoApproveHitl):
         return self.decision
 
 
-def _last_turn_record(home: Path) -> dict[str, Any]:
+def _turn_records(home: Path) -> list[dict[str, Any]]:
     path = turn_records_path(home)
     if not path.is_file():
-        return {}
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if not lines:
-        return {}
+        return []
     import json
 
-    try:
-        return json.loads(lines[-1])
-    except ValueError:
-        return {}
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            records.append(parsed)
+    return records
+
+
+def _last_turn_record(home: Path) -> dict[str, Any]:
+    records = _turn_records(home)
+    return records[-1] if records else {}
+
+
+def _decision_for(row: CorpusRow) -> ApprovalDecision:
+    if row.hitl_decision == "approve":
+        return ApprovalDecision.APPROVE
+    return ApprovalDecision.DENY
 
 
 async def run_row(row: CorpusRow, *, corpus_dir: Path, run_home: Path) -> RowReport:
@@ -119,49 +136,83 @@ async def run_row(row: CorpusRow, *, corpus_dir: Path, run_home: Path) -> RowRep
         )
         return report
 
+    # Hermetic: a reused run home would leak a previous run's state.db,
+    # turns.jsonl, workspace, and read caches into this row's metrics.
+    if run_home.exists():
+        shutil.rmtree(run_home, ignore_errors=True)
     init_home(run_home)
     settings = LatticeSettings(home=run_home)
     settings.agent.workspace = run_home / "workspace"
     settings.agent.workspace.mkdir(parents=True, exist_ok=True)
     # Local-only memory: no mem0/network during eval.
     settings.memory.self_check = False
+    for rel, content in row.files.items():
+        target = settings.agent.workspace / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
 
     replay: ReplayModel = build_replay_model(cassette)
     collector = _CollectingEvents()
-    hitl = CountingHitl()
+    hitl = CountingHitl(decision=_decision_for(row))
     store = SessionStore(run_home / "state.db")
 
-    outbound = await run_turn(
-        Inbound(
-            text=row.inbound.text,
-            profile_id=row.inbound.profile_id,
-            channel=row.inbound.channel,
-            user_id="eval",
-        ),
-        settings=settings,
-        hitl=hitl,
-        events=collector,
-        session_store=store,
-        model=replay,
-        stream=False,
-        memory=InMemoryMemory("eval"),
-    )
+    outputs: list[str] = []
+    session_id: str | None = None
+    before = 0
+    requests = input_tokens = output_tokens = retries = tools_offered = 0
+    cache_read = 0
+    duration_ms = 0
+    cost: float | None = None
+    ttft_ms: int | None = None
 
-    record = _last_turn_record(run_home)
-    usage = record.get("usage") or {}
-    report.output = outbound.text
+    for spec in row.effective_turns():
+        outbound = await run_turn(
+            Inbound(
+                text=spec.text,
+                profile_id=spec.profile_id,
+                channel=spec.channel,
+                user_id="eval",
+                session_id=session_id,
+            ),
+            settings=settings,
+            hitl=hitl,
+            events=collector,
+            session_store=store,
+            model=replay,
+            stream=False,
+            memory=InMemoryMemory("eval"),
+        )
+        session_id = outbound.session_id
+        outputs.append(outbound.text)
+        records = _turn_records(run_home)
+        for record in records[before:]:
+            usage = record.get("usage") or {}
+            requests += int(usage.get("requests") or 0)
+            input_tokens += int(usage.get("input_tokens") or 0)
+            output_tokens += int(usage.get("output_tokens") or 0)
+            cache_read += int(usage.get("cache_read_tokens") or 0)
+            retries += int(record.get("retry_count") or 0)
+            tools_offered = max(tools_offered, int(record.get("tools_offered") or 0))
+            duration_ms += int(record.get("duration_ms") or 0)
+            if record.get("ttft_ms") is not None:
+                ttft_ms = max(ttft_ms or 0, int(record["ttft_ms"]))
+            if usage.get("cost") is not None:
+                cost = (cost or 0.0) + float(usage["cost"])
+        before = len(records)
+
+    report.output = "\n".join(outputs)
     report.tools = collector.tools
     report.tool_calls = len(collector.tools)
-    report.tools_offered = int(record.get("tools_offered") or 0)
+    report.tools_offered = tools_offered
     report.hitl_prompts = hitl.prompts
-    report.retries = int(record.get("retry_count") or 0)
-    report.ttft_ms = record.get("ttft_ms")
-    report.duration_ms = int(record.get("duration_ms") or 0)
-    report.requests = int(usage.get("requests") or 0)
-    report.input_tokens = int(usage.get("input_tokens") or 0)
-    report.output_tokens = int(usage.get("output_tokens") or 0)
-    report.cost = usage.get("cost")
-    report.cache_hit_ratio = float(usage.get("cache_hit_ratio") or 0.0)
+    report.retries = retries
+    report.ttft_ms = ttft_ms
+    report.duration_ms = duration_ms
+    report.requests = requests
+    report.input_tokens = input_tokens
+    report.output_tokens = output_tokens
+    report.cost = cost
+    report.cache_hit_ratio = (cache_read / input_tokens) if input_tokens else 0.0
     report.prompt_drift = replay.prompt_drift
 
     def check(name: str, ok: bool, detail: str = "") -> None:
@@ -181,7 +232,7 @@ async def run_row(row: CorpusRow, *, corpus_dir: Path, run_home: Path) -> RowRep
 
     if row.expect.output_contains:
         missing_text = [
-            snippet for snippet in row.expect.output_contains if snippet not in outbound.text
+            snippet for snippet in row.expect.output_contains if snippet not in report.output
         ]
         check(
             "output_contains",
@@ -199,6 +250,30 @@ async def run_row(row: CorpusRow, *, corpus_dir: Path, run_home: Path) -> RowRep
             "max_requests",
             report.requests <= row.expect.max_requests,
             f"requests={report.requests}",
+        )
+    if row.expect.no_prompt_drift:
+        check(
+            "no_prompt_drift",
+            not report.prompt_drift,
+            f"drift={report.prompt_drift}",
+        )
+    if row.expect.max_duration_ms is not None:
+        check(
+            "max_duration_ms",
+            report.duration_ms <= row.expect.max_duration_ms,
+            f"duration_ms={report.duration_ms}",
+        )
+    if row.expect.max_cost is not None:
+        check(
+            "max_cost",
+            (report.cost or 0.0) <= row.expect.max_cost,
+            f"cost={report.cost}",
+        )
+    if row.expect.max_ttft_ms is not None:
+        check(
+            "max_ttft_ms",
+            report.ttft_ms is not None and report.ttft_ms <= row.expect.max_ttft_ms,
+            f"ttft_ms={report.ttft_ms}",
         )
 
     report.passed = all(a.passed for a in report.assertions)

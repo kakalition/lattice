@@ -95,6 +95,8 @@ class TurnDeps(BaseModel):
     user_tools: list = Field(default_factory=list)
     user_id: str = "local"
     channel: str = "cli"
+    # Namespaces per-turn caches (e.g. read elision) so cross-turn reads re-serve.
+    turn_id: str = ""
     outbound_media: list[Path] = Field(default_factory=list)
 
 

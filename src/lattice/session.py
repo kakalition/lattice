@@ -22,6 +22,13 @@ _LOCKS_GUARD = threading.Lock()
 _session_locks: dict[str, asyncio.Lock] = {}
 
 
+def _evict_model_cache() -> None:
+    """Drop shared provider clients when the effective model id changes."""
+    from lattice.providers.openai_compat import clear_model_cache
+
+    clear_model_cache()
+
+
 def _session_lock(session_id: str) -> asyncio.Lock:
     with _LOCKS_GUARD:
         lock = _session_locks.get(session_id)
@@ -353,6 +360,7 @@ class SessionStore:
                 await conn.commit()
             finally:
                 await conn.close()
+        _evict_model_cache()
 
     async def get_sticky_primary_model(self, channel: str, user_id: str) -> str | None:
         conn = await self.connect()
@@ -377,6 +385,7 @@ class SessionStore:
                 await conn.commit()
             finally:
                 await conn.close()
+        _evict_model_cache()
 
 
 def sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

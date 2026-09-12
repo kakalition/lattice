@@ -3,6 +3,7 @@ bounded truncation, failure breaker, and summarizer reuse."""
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from lattice.config import LatticeSettings
+from lattice.context import index as index_mod
 from lattice.context.index import build_workspace_context
 from lattice.context.pressure import PressureConfig
 from lattice.deps import CORE_TOOL_NAMES, TurnDeps, traced, truncate_result
@@ -29,8 +31,10 @@ from lattice.tools.agent import default_eager_names, tool_functions
 @pytest.fixture(autouse=True)
 def _clean_read_cache():
     read_cache.reset()
+    index_mod.reset_workspace_cache()
     yield
     read_cache.reset()
+    index_mod.reset_workspace_cache()
 
 
 def _deps(tmp_path: Path) -> TurnDeps:
@@ -86,6 +90,24 @@ async def test_workspace_context_lists_files_and_db_schemas(tmp_path: Path) -> N
     assert "t(" in text
 
 
+def test_workspace_index_cache_avoids_rescandir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    calls = {"n": 0}
+    real = os.scandir
+
+    def counting(path):
+        calls["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(index_mod.os, "scandir", counting)
+    first = index_mod.workspace_index(tmp_path)
+    second = index_mod.workspace_index(tmp_path)
+    assert first == second
+    assert calls["n"] == 1
+
+
 @pytest.mark.asyncio
 async def test_db_schema_is_cached_per_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -135,6 +157,14 @@ async def test_read_file_elides_unchanged_body(tmp_path: Path) -> None:
     target.write_text("hello world", encoding="utf-8")
     third = await tools["read_file"](ctx, "a.txt")
     assert third == "hello world"
+
+    # A new turn on the same session must re-serve the body: tool results are
+    # not replayed, so the model has not seen this file this turn.
+    deps.turn_id = "turn-2"
+    fourth = await tools["read_file"](ctx, "a.txt")
+    assert fourth == "hello world"
+    fifth = await tools["read_file"](ctx, "a.txt")
+    assert "unchanged since last read" in fifth
 
 
 def test_truncate_result_default_unchanged() -> None:

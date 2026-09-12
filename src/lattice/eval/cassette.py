@@ -34,6 +34,12 @@ from lattice.turn_trace import current_turn_id
 logger = logging.getLogger("lattice.eval.cassette")
 
 _NOTICE_RE = re.compile(r"^\s*\[notice\].*$", re.MULTILINE)
+# Environment-dependent lines live in the (cacheable) system prefix now, but they
+# still differ between record and replay hosts: normalize them out of the digest
+# so a committed cassette is portable and drift reflects real prompt changes.
+_ENV_LINE_RE = re.compile(
+    r"^(?:Runtime: workspace=|Registered DBs:|Canonical .*DB:).*$", re.MULTILINE
+)
 # Per-message metadata that changes between record and replay.
 _VOLATILE_KEYS = frozenset({"timestamp", "run_id", "conversation_id"})
 
@@ -52,7 +58,8 @@ class CassetteEntry(BaseModel):
 
 
 def _scrub_text(text: str) -> str:
-    """Drop the volatile per-turn ``[notice]`` preamble from a prompt string."""
+    """Drop volatile/environment lines from a prompt string before digesting."""
+    text = _ENV_LINE_RE.sub("", text)
     if not text.lstrip().startswith("[notice]"):
         return _NOTICE_RE.sub("", text)
     # The preamble is a run of notice lines separated from the user text by a

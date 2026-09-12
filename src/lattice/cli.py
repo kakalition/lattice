@@ -293,6 +293,51 @@ def eval_mine(
 
 
 @app.command()
+def stats(
+    days: int = typer.Option(0, "--days", help="Only the last N days (0 = all)"),
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON"),
+    home: Path | None = typer.Option(None, help="Override Lattice home"),
+) -> None:
+    """Aggregate <home>/logs/turns.jsonl into outcome/latency/cache stats."""
+    import json as jsonlib
+
+    from lattice.stats import stats_for_home
+    from lattice.turn_record import turn_records_path
+
+    root = home or lattice_home()
+    path = turn_records_path(root)
+    data = stats_for_home(root, days=days or None)
+    if as_json:
+        console.print_json(jsonlib.dumps(data))
+        return
+    console.print(f"[bold]turns[/] {data['turns']}  [dim]{path}[/]")
+    if not data["turns"]:
+        return
+    console.print("outcomes: " + ", ".join(f"{k}={v}" for k, v in data["outcomes"].items()))
+    duration = data["duration_ms"]
+    ttft = data["ttft_ms"]
+    console.print(
+        f"duration_ms p50={duration['p50']} p95={duration['p95']}  "
+        f"ttft_ms p50={ttft['p50']} p95={ttft['p95']}"
+    )
+    console.print(
+        f"requests={data['requests']} tool_calls={data['tool_calls']} "
+        f"cache_hit_ratio={data['cache_hit_ratio']:.3f} "
+        f"retries={data['retries']} compressions={data['compressions']}"
+    )
+    if data["top_failing_tools"]:
+        console.print(
+            "top failing: "
+            + ", ".join(f"{name}={count}" for name, count in data["top_failing_tools"])
+        )
+    if data["top_expensive_tools"]:
+        console.print(
+            "top expensive: "
+            + ", ".join(f"{name}={ms}ms" for name, ms in data["top_expensive_tools"])
+        )
+
+
+@app.command()
 def gateway(
     once: bool = typer.Option(False, "--once", help="Run scheduler once then exit (no telegram)"),
 ) -> None:

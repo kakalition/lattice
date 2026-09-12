@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -41,9 +42,38 @@ _schema_cache: OrderedDict[str, tuple[int, int, str]] = OrderedDict()
 _schema_lock = threading.Lock()
 _SCHEMA_CACHE_MAX = 32
 
+# Directory listing is rescanned every turn; cache it keyed by directory
+# (mtime_ns, size) with a short TTL so a file edit inside an existing entry
+# still refreshes the "recent files" ordering without rescanning per turn.
+_workspace_cache: OrderedDict[str, tuple[int, int, float, str]] = OrderedDict()
+_workspace_lock = threading.Lock()
+_WORKSPACE_CACHE_MAX = 16
+_WORKSPACE_TTL_SECONDS = 2.0
+
+
+def reset_workspace_cache() -> None:
+    with _workspace_lock:
+        _workspace_cache.clear()
+
 
 def workspace_index(workspace: Path) -> str:
     """One-level listing: dirs plus most-recently-modified files."""
+    key = str(workspace)
+    try:
+        stat = workspace.stat()
+        fingerprint = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return ""
+    now = time.monotonic()
+    with _workspace_lock:
+        cached = _workspace_cache.get(key)
+        if (
+            cached is not None
+            and cached[:2] == fingerprint
+            and (now - cached[2]) < _WORKSPACE_TTL_SECONDS
+        ):
+            _workspace_cache.move_to_end(key)
+            return cached[3]
     try:
         entries = list(os.scandir(workspace))
     except OSError:
@@ -71,7 +101,13 @@ def workspace_index(workspace: Path) -> str:
     if files:
         names = ", ".join(name for _, name in files[:_MAX_FILES])
         lines.append(f"Recent files: {names}" + ("…" if len(files) > _MAX_FILES else ""))
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    with _workspace_lock:
+        _workspace_cache[key] = (fingerprint[0], fingerprint[1], now, text)
+        _workspace_cache.move_to_end(key)
+        while len(_workspace_cache) > _WORKSPACE_CACHE_MAX:
+            _workspace_cache.popitem(last=False)
+    return text
 
 
 def _quote(table: str) -> str:

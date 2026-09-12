@@ -6,6 +6,9 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
+import lattice.turn as turn_mod
 from lattice.turn import discover_turn_media, snapshot_media
 
 
@@ -48,6 +51,40 @@ def test_dedupes_against_existing_outbound_media(tmp_path: Path) -> None:
     )
 
     assert found == []
+
+
+@pytest.mark.asyncio
+async def test_pure_text_turn_skips_media_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pydantic_ai.models.test import TestModel
+
+    from lattice.config import LatticeSettings
+    from lattice.memory import InMemoryMemory
+    from lattice.models import Inbound
+    from lattice.session import SessionStore
+    from lattice.setup import init_home
+    from lattice.turn import run_turn
+
+    calls = {"n": 0}
+    real = turn_mod.discover_turn_media
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(turn_mod, "discover_turn_media", counting)
+    init_home(tmp_path)
+    settings = LatticeSettings(home=tmp_path)
+    settings.agent.workspace = tmp_path / "ws"
+    await run_turn(
+        Inbound(text="just chat", profile_id="default", channel="cli", user_id="u"),
+        settings=settings,
+        session_store=SessionStore(tmp_path / "state.db"),
+        model=TestModel(call_tools=[], custom_output_text="hi"),
+        memory=InMemoryMemory("t"),
+    )
+    assert calls["n"] == 0
 
 
 def test_caps_count_and_ignores_non_media(tmp_path: Path) -> None:

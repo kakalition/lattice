@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from pydantic_ai._run_context import RunContext
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelResponse
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.settings import ModelSettings
@@ -91,6 +91,17 @@ class LoggingModel(WrapperModel):
         # Input tokens of the most recent successful request: the closest thing
         # to the live context size, used to calibrate compression pressure.
         self.last_input_tokens = 0
+        # Serialized char count of the exact messages sent: paired with
+        # ``last_input_tokens`` it calibrates tokens-per-char on the real request
+        # (including tool results, which the persisted transcript drops).
+        self.last_request_chars = 0
+
+    @staticmethod
+    def _request_chars(messages: list[ModelMessage]) -> int:
+        try:
+            return len(ModelMessagesTypeAdapter.dump_json(messages))
+        except Exception:
+            return 0
 
     def _name(self) -> str:
         # Cache the name: ``model_name`` is cheap, but ``__getattr__`` forwarding
@@ -144,6 +155,7 @@ class LoggingModel(WrapperModel):
     ) -> ModelResponse:
         call = self._calls + 1
         self._calls = call
+        self.last_request_chars = self._request_chars(messages)
         started = time.perf_counter()
         try:
             response = await self.wrapped.request(
@@ -180,6 +192,7 @@ class LoggingModel(WrapperModel):
     ) -> AsyncGenerator[StreamedResponse]:
         call = self._calls + 1
         self._calls = call
+        self.last_request_chars = self._request_chars(messages)
         started = time.perf_counter()
         try:
             async with self.wrapped.request_stream(
