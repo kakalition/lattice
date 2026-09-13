@@ -21,10 +21,6 @@ into the same `run_turn`, so profiles, memory, tools, safety, and observability 
 identically no matter where a message arrives. One model runs each turn; everything else is
 composable around it.
 
-> [!NOTE]
-> The design lineage is documented in [`docs/HERMES_HARVEST.md`](docs/HERMES_HARVEST.md),
-> which maps what was adopted from the Hermes harness (and what was deliberately skipped).
-
 ## Table of Contents
 
 - [Features](#features)
@@ -43,7 +39,6 @@ composable around it.
 - [Development](#development)
 - [Security & Safety](#security--safety)
 - [Project Layout](#project-layout)
-- [Documentation](#documentation)
 
 ## Features
 
@@ -98,11 +93,6 @@ flowchart TD
     AGENT --> PROV["Providers<br/>OpenAI-compatible · OpenRouter"]
     SCHED["Scheduler<br/>30s poll in gateway"] --> WAIST
 ```
-
-Rendered reference diagrams live in [`docs/architecture/`](docs/architecture) — open
-[`hermes-system.html`](docs/architecture/hermes-system.html) or the
-[`hermes-harness-loop.html`](docs/architecture/hermes-harness-loop.html) for the full-sized
-views (PNG exports at 1440×900 and 2048×1320 are alongside them).
 
 ## Quick Start
 
@@ -406,17 +396,7 @@ src/lattice/
 └── assets/      # SOUL.md, logos, bundled skill scripts
 
 tests/           # unit + integration + eval corpus
-docs/            # HERMES_HARVEST.md + architecture diagrams
 ```
-
-## Documentation
-
-- [`docs/HERMES_HARVEST.md`](docs/HERMES_HARVEST.md) — what Lattice adopted from the Hermes
-  harness and what it intentionally skipped.
-- [`docs/architecture/`](docs/architecture) — system and harness-loop diagrams:
-  - [`hermes-system.html`](docs/architecture/hermes-system.html)
-  - [`hermes-harness-loop.html`](docs/architecture/hermes-harness-loop.html)
-  - PNG exports at 1440×900 and 2048×1320 (light and dark).
 
 <div align="center">
 

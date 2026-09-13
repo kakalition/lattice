@@ -1,4 +1,4 @@
-"""Full Hermes-style context compressor."""
+"""Full context compressor."""
 
 from __future__ import annotations
 
