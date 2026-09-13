@@ -4,7 +4,7 @@
 
 # Lattice
 
-**A thin-waist personal agent with profiles, MCP, memory, and HITL.**
+**A single-user AI agent that runs on your machine — safe by default, extensible with plain files, and observable end to end.**
 
 [![CI](https://github.com/kakalition/lattice/actions/workflows/ci.yml/badge.svg)](https://github.com/kakalition/lattice/actions/workflows/ci.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
@@ -15,14 +15,52 @@
 
 </div>
 
-Lattice is a single-user agent platform built around one narrow, well-tested turn
-pipeline — the *thin waist*. Channels (a Rich CLI, a Textual TUI, and Telegram) all funnel
-into the same `run_turn`, so profiles, memory, tools, safety, and observability behave
-identically no matter where a message arrives. One model runs each turn; everything else is
-composable around it.
+Lattice is a personal AI agent you run yourself. One narrow, well-tested turn pipeline —
+the *thin waist* — powers every way you talk to it: a Rich CLI, a full-screen terminal UI,
+and a Telegram bot. Because every channel funnels into the same `run_turn`, your profiles,
+memory, tools, safety gates, and telemetry behave exactly the same wherever a message
+arrives. One model drives each turn; everything else is composable around it.
+
+## Why Lattice?
+
+Most agent projects are either **frameworks** you wire together yourself or **hosted
+assistants** that keep your data on someone else's servers. Lattice is a third option: a
+complete, single-user agent that runs locally, behaves identically on every surface, and
+stays inspectable.
+
+- **One pipeline, every surface.** The CLI, TUI, Telegram, and scheduled jobs all call the
+  same `run_turn`. There is no per-channel behavior to drift, and nothing to reimplement
+  when you add another interface.
+- **One model per turn, on purpose.** The agent loop, context compression, and memory
+  extraction run on a single resolved model (you can point summarization at a cheaper one).
+  There are no hidden orchestrator/router/worker layers to debug or pay for — the reasoning
+  lives in one loop you can actually follow.
+- **Local-first by default.** Sessions, memory, schedules, browser profile, and databases
+  live under `.lattice/`; memory is an embedded vector store, not a hosted service. Secrets
+  live only in `.env`. One command turns the whole home into a portable archive.
+- **Safety is structural, not a prompt.** Destructive and high-blast-radius actions are
+  approval-gated, with remembered approvals and a breaker that stops repeated prompting.
+  Scripts run sandboxed with network off by default, file tools are jailed to the workspace,
+  root-wide scans are refused, and every approval and shell command is written to an audit
+  log.
+- **Built for months of context, not one chat.** The system prompt is split into a
+  cache-stable prefix and a small per-turn tail. Compression protects your most recent
+  messages, never splits tool call/result pairs, and carries a compact action ledger,
+  recent evidence, and open todos across the boundary.
+- **Tools that scale without bloating the prompt.** A small eager set is always visible;
+  everything else stays behind a fast, in-process search that works even on providers with
+  no native tool search. MCP servers are deferred automatically as the tool list grows.
+- **Extensible with plain files, not forks.** Add a skill (`SKILL.md`), a script, a
+  declarative tool (`tools/<name>.yaml`), or a profile and persona — changes are live on the
+  next turn. No rebuild, no plugin API.
+- **Observable and testable offline.** Every turn writes a structured record (phases, TTFT,
+  cache tokens, per-tool timing), `lattice stats` summarizes them, and `lattice eval`
+  replays recorded model responses through the *real* pipeline so regressions are caught
+  without spending tokens.
 
 ## Table of Contents
 
+- [Why Lattice?](#why-lattice)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
@@ -42,23 +80,64 @@ composable around it.
 
 ## Features
 
-| | Feature | What it does |
-|---|---------|--------------|
-| ⚙️ | **Thin waist** | One `run_turn` pipeline owns prompting, HITL, budgets, compression, and tool execution for every channel. |
-| 🎭 | **Profiles & personas** | `profiles/<id>/{profile.yaml,SOUL.md,USER.md}`: persona, durable user notes, skill/tool policy, optional model and SQLite scope. Edits apply on the next turn. |
-| 🧠 | **One model per turn** | A single resolved model drives the loop, context compression, and fact extraction. Profile override + sticky `/model` per channel and user. |
-| 💸 | **Prompt caching** | Stable system prefix plus replayed history; volatile notices in the user tail. Cache tokens persisted per turn and visible in stats. |
-| 🛡️ | **HITL safety** | Approval gates on high-blast-radius actions, with approval memory and a consecutive-denial breaker. Every decision lands in `audit.jsonl`. |
-| 🗜️ | **Context compression** | Compresses long sessions while protecting the last `N` messages via `context_pressure_ratio` / `protect_last_n`. |
-| 🧩 | **Skills** | `skills/<name>/SKILL.md` with YAML frontmatter and progressive disclosure; authoring ladder from skill → script → one tool manifest. |
-| 🪢 | **Memory** | mem0 + local Qdrant under `.lattice/qdrant`, a bounded background worker, and a boot self-check that fails loudly. |
-| 🔌 | **MCP bridge** | Attach MCP servers as toolsets, with deferral (`always` / `auto` / `never`) once the tool count crosses a threshold. |
-| 🗄️ | **Multi-SQLite** | A named database registry with read-only options, safe pragmas, row/time limits, and HITL-gated destructive DDL. |
-| ⏰ | **Scheduler & reminders** | Cron or one-shot jobs, verbatim reminder phrasing, delivered by the gateway to Telegram, CLI, or nowhere. |
-| 🌐 | **Browser automation** | Playwright with a persistent profile, system-Chrome preference, and humanized input. |
-| 👁️ | **Multimodal I/O** | OCR, PDF generation, and chart rendering as first-class tools. |
-| 📊 | **Observability & offline eval** | `logs/turns.jsonl` turn records, `lattice stats`, and `lattice eval run` replaying a corpus through production `run_turn`. |
-| 💬 | **Channels** | Rich CLI, Textual TUI, and a Telegram gateway that also polls the scheduler. |
+### Talk to it anywhere
+
+- **Terminal chat** — a plain REPL or a full-screen Textual UI, with streamed replies, a
+  live "thinking" status, and `/profile`, `/model`, `/sessions`, `/resume`, `/reset`, `/stop`.
+- **Telegram** — a DM bot with streamed status edits, inline approve/deny and choice
+  buttons, photo and document input/output, Telegram-friendly Markdown, and per-user queues.
+- **Scheduled check-ins** — cron or one-shot reminders, delivered verbatim to Telegram, the
+  CLI, or nowhere.
+
+### It remembers, and stays coherent
+
+- **Long-term memory** — local mem0 + Qdrant with hybrid (dense + lexical) search. Explicit
+  "remember this" is stored verbatim, and a boot self-check catches a silently broken memory
+  backend.
+- **Sessions that persist** — resume any past conversation and search across them.
+- **Long-context handling** — automatic compression protects your latest messages, and the
+  action ledger, recent evidence, and todo list survive compaction.
+
+### It actually does things
+
+- **Files & shell** — read, write, edit, and search files; a guarded shell that refuses
+  unbounded scans.
+- **Web & browser** — search and fetch, plus Playwright automation with a persistent
+  profile and humanized input.
+- **Documents & media** — OCR, branded PDF generation, and charts; images and PDFs it
+  creates are delivered straight to your chat.
+- **Databases** — a named SQLite registry with read-only options, safe pragmas, row/time
+  limits, automatic backups, and approval-gated destructive statements.
+- **Code & compute** — sandboxed Python/Node/Bash scripts and a safe calculator.
+
+### Safe to hand real work to
+
+- **Approval gates** on destructive, high-blast-radius actions, with remembered approvals
+  and a breaker that stops it re-asking.
+- **Audit trail** — every approval decision and shell command is appended to `audit.jsonl`.
+- **Sandboxing** — bubblewrap isolation, network off by default, workspace path jails,
+  symlink-safe deletes, and refusal of root-wide scans.
+- **Secret hygiene** — API keys and tokens can only ever come from `.env`.
+
+### It adapts to you
+
+- **Profiles & personas** — a per-profile persona (`SOUL.md`), durable user notes
+  (`USER.md`), and tool/skill/model/database policy that apply live on the next turn.
+- **Skills** — readable `SKILL.md` instructions that load only when relevant.
+- **Custom tools** — declare a tool in `tools/<name>.yaml` and it is callable next turn.
+- **MCP** — attach Model Context Protocol servers as tools, deferred automatically once the
+  tool list grows large.
+
+### You can see and improve it
+
+- **Tool discovery** — cold tools are found by a fast local search instead of bloating every
+  request.
+- **Prompt caching** — a stable prefix plus session pinning keeps costs down on providers
+  that support caching.
+- **Observability** — one structured record per turn, and `lattice stats` for outcomes,
+  latency, cache hit rate, and tool cost.
+- **Offline eval** — replay recordings through the production pipeline; no API keys needed.
+- **Backup & restore** — archive and restore the whole agent home in one command.
 
 ## Architecture
 
@@ -134,9 +213,22 @@ agent:
   hitl_timeout_seconds: 600
   turn_timeout_seconds: 600        # legacy alias: idle_watchdog_seconds
   request_timeout_seconds: 120
+  # summarizer_model: <cheaper-model>   # defaults to primary_model
+  context_pressure_ratio: 0.5      # compress when context passes this fraction
+  protect_last_n: 20               # newest messages kept intact when compressing
+  prompt_cache: true               # explicit caching for capable OpenRouter models
+  prompt_cache_ttl: 5m             # 5m | 1h (1h is Anthropic-only)
+  replay_evidence: true            # replay recent reads/queries in the volatile tail
+  # context_window_tokens: null    # override; null resolves from the model profile
 
 observability:
-  turn_record: true
+  turn_record: true                # one structured JSON line per turn
+
+memory:
+  extract_on_turn: false           # off = embed + store the transcript, no LLM call
+  self_check: true                 # verify the memory round-trip at boot
+  sync_timeout_seconds: 60
+  search_timeout_seconds: 0.0      # 0 = unbounded recall
 
 tools:
   allow: ["*"]
@@ -145,6 +237,8 @@ tools:
   mcp_defer_threshold: 8
   search_strategy: bm25            # bm25 (default) | keywords
   search_min_ratio: 0.35           # drop BM25 matches under this fraction of the top score; 0 disables
+  eager: []                        # fnmatch globs that force tools eager
+  cold: []                         # fnmatch globs that force tools behind search (wins on conflict)
 
 browser:
   channel: auto                    # auto | chrome | chromium (auto prefers system Chrome)
@@ -158,6 +252,11 @@ scripts:
   max_timeout_seconds: 300
   allow_network: false
   require_bwrap: false             # true = refuse to run without bubblewrap
+
+sqlite:
+  databases: {}                    # name -> {path, read_only}
+  query_row_limit: 500
+  query_timeout_ms: 5000
 
 default_profile: default
 ```
@@ -360,7 +459,7 @@ uv run pytest -m eval             # offline cassette replay, no secrets
 uv run pytest -m integration      # live LLM/Tavily when .env keys are present
 ```
 
-The test suite lives under `tests/` (roughly 50 modules) with the eval corpus under
+The test suite lives under `tests/` (roughly 55 modules) with the eval corpus under
 `tests/eval/`. CI runs ruff check, `ruff format --check`, unit tests, and eval replay;
 integration tests run when `OPENROUTER_API_KEY` is available.
 
