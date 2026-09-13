@@ -6,6 +6,7 @@ import asyncio
 import atexit
 import logging
 import os
+import re
 import threading
 import uuid
 import warnings
@@ -15,11 +16,16 @@ from pathlib import Path
 from typing import Any
 
 from lattice.paths import lattice_home
+from lattice.text import normalize
 
 logger = logging.getLogger("lattice.memory")
 
 _EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 _EMBED_DIMS = 384
+
+# Bumped whenever ``lattice.text.normalize`` changes shape. Persisted per
+# collection so a one-time reindex of stored BM25 sparse vectors can run.
+_BM25_LEMMA_VERSION = 1
 
 # mem0 asks its LLM for a JSON fact list and hard-fails the whole batch on any
 # syntax drift (prose, markdown fences, trailing commas). Passed as mem0's
@@ -33,7 +39,7 @@ _STRICT_JSON_INSTRUCTIONS = (
 
 _client_lock = threading.Lock()
 _clients: dict[str, Any] = {}
-_instances: dict[tuple[str, str], Any] = {}
+_instances: dict[tuple[Any, ...], Any] = {}
 _clients_closed = False
 
 
@@ -110,6 +116,17 @@ def _silence_mem0_deps() -> None:
         spacy_models._nlp_full = None
     except Exception:
         pass
+    # Swap mem0's spaCy lemmatizer for our dependency-free normalizer. Two names
+    # must be rebound: ``mem0.memory.main`` imported the function directly at module
+    # load, and ``mem0.utils.scoring`` imports the module lazily at call time.
+    try:
+        import mem0.memory.main as mem0_main
+        import mem0.utils.lemmatization as mem0_lemmatization
+
+        mem0_main.lemmatize_for_bm25 = normalize
+        mem0_lemmatization.lemmatize_for_bm25 = normalize
+    except Exception:
+        logger.debug("could not install the lattice BM25 normalizer", exc_info=True)
 
 
 @contextmanager
@@ -230,6 +247,49 @@ def _first_memory_id(result: Any) -> str | None:
     return None
 
 
+def _format_results(results: Any) -> list[dict[str, Any]]:
+    """Normalize mem0's ``{"results": [...]}`` shape into lattice's flat rows."""
+    if isinstance(results, dict):
+        results = results.get("results") or results.get("memories") or []
+    out: list[dict[str, Any]] = []
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        row: dict[str, Any] = {
+            "id": str(item.get("id") or item.get("memory_id") or ""),
+            "text": str(item.get("memory") or item.get("text") or item),
+            "metadata": item.get("metadata") or {},
+        }
+        score = item.get("score")
+        if score is not None:
+            row["score"] = float(score)
+        out.append(row)
+    return out
+
+
+def _merge_lexical(
+    dense: list[dict[str, Any]], lexical: list[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
+    """Keep mem0's hybrid ranking, but reserve slots for BM25-only matches.
+
+    mem0 only computes BM25 scores for ids its dense search already returned, so
+    an exact-token memory that dense retrieval missed is invisible to it. Reserve
+    up to half the requested slots for lexical-only candidates — never displacing
+    the top dense hit — and fill any unused dense slots from the lexical list too.
+    """
+    if limit <= 0:
+        return []
+    dense = dense[:limit]
+    dense_ids = {str(row["id"]) for row in dense}
+    lexical_only = [row for row in lexical if str(row["id"]) not in dense_ids]
+    if not lexical_only:
+        return dense
+    overflow = limit - len(dense)
+    reserve = max(1, limit // 2) if limit > 1 else 0
+    lexical_count = min(len(lexical_only), max(overflow, reserve))
+    return dense[: limit - lexical_count] + lexical_only[:lexical_count]
+
+
 class InMemoryMemory:
     """Fallback when mem0/qdrant are unavailable."""
 
@@ -314,27 +374,19 @@ class Mem0QdrantMemory:
             return await self._fallback.search(query, limit=limit)
         try:
             with _quiet_mem0():
+                # Bring stored sparse vectors up to the current normalizer once.
+                await asyncio.to_thread(self._ensure_bm25_reindex)
                 # mem0 v2 rejects top-level entity kwargs on search(); they must
-                # be passed as filters. Passing user_id= here raised ValueError,
-                # which the except below turned into a silent empty result.
+                # be passed as filters. ``top_k`` (not ``limit``) is mem0's knob —
+                # passing ``limit`` silently left it at the default 20.
                 results = await asyncio.to_thread(
                     self._memory.search,
                     query,
                     filters={"user_id": self.collection},
-                    limit=limit,
+                    top_k=limit,
                 )
-            if isinstance(results, dict):
-                results = results.get("results") or results.get("memories") or []
-            out: list[dict[str, Any]] = []
-            for item in results or []:
-                if isinstance(item, dict):
-                    out.append(
-                        {
-                            "id": str(item.get("id") or item.get("memory_id") or ""),
-                            "text": str(item.get("memory") or item.get("text") or item),
-                            "metadata": item.get("metadata") or {},
-                        }
-                    )
+                lexical = await asyncio.to_thread(self._lexical_hits, query, limit)
+            out = _merge_lexical(_format_results(results), lexical, limit)
             # Probe rows are internal health-check artefacts; never surface them.
             # They are also deleted by probe_memory, but a crash mid-probe could
             # leave one behind, and it must not leak into the model's context.
@@ -346,6 +398,119 @@ class Mem0QdrantMemory:
                 "mem0 search failed; returning empty results from the fallback", exc_info=True
             )
             return await self._fallback.search(query, limit=limit)
+
+    def _bm25_marker_path(self) -> Path | None:
+        path = getattr(self, "path", None)
+        collection = getattr(self, "collection", "")
+        if path is None or not collection:
+            return None
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", collection)
+        return Path(path) / ".lattice" / f"bm25-lemma-{safe}.version"
+
+    def _ensure_bm25_reindex(self) -> None:
+        """Re-normalize stored BM25 sparse vectors once, after a normalizer change.
+
+        Memories written before this module installed its own normalizer carry
+        ``text_lemmatized`` (and the sparse vector derived from it) in raw surface
+        form, so query-side stemming no longer matches them. This rewrites both
+        payload and the named ``bm25`` vector, guarded by a per-collection version
+        file so it runs once. Best-effort: a failure leaves the marker unwritten
+        but disables further retries for this instance to avoid per-search noise.
+        """
+        if getattr(self, "_bm25_reindex_done", False):
+            return
+        vector_store = getattr(self._memory, "vector_store", None)
+        if vector_store is None or not getattr(vector_store, "_has_bm25_slot", False):
+            self._bm25_reindex_done = True
+            return
+        marker = self._bm25_marker_path()
+        if marker is not None and marker.is_file():
+            with suppress(Exception):
+                if marker.read_text(encoding="utf-8").strip() == str(_BM25_LEMMA_VERSION):
+                    self._bm25_reindex_done = True
+                    return
+        self._bm25_reindex_done = True
+        try:
+            from qdrant_client import models
+
+            client = vector_store.client
+            collection = vector_store.collection_name
+            updated = 0
+            offset: Any = None
+            while True:
+                points, offset = client.scroll(
+                    collection_name=collection,
+                    limit=256,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                if not points:
+                    break
+                for point in points:
+                    payload = getattr(point, "payload", None) or {}
+                    text = payload.get("data") or payload.get("text_lemmatized")
+                    if not text:
+                        continue
+                    normalized = normalize(str(text))
+                    if payload.get("text_lemmatized") == normalized:
+                        continue
+                    sparse = vector_store._encode_bm25(normalized)
+                    if sparse is None:
+                        return
+                    client.update_vectors(
+                        collection_name=collection,
+                        points=[models.PointVectors(id=point.id, vector={"bm25": sparse})],
+                    )
+                    client.set_payload(
+                        collection_name=collection,
+                        payload={"text_lemmatized": normalized},
+                        points=[point.id],
+                    )
+                    updated += 1
+                if offset is None:
+                    break
+            if marker is not None:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(str(_BM25_LEMMA_VERSION), encoding="utf-8")
+            if updated:
+                logger.info("memory BM25 reindex: %d memories updated in %s", updated, collection)
+        except Exception:
+            logger.warning(
+                "memory BM25 reindex failed; lexical matching may be stale", exc_info=True
+            )
+
+    def _lexical_hits(self, query: str, limit: int) -> list[dict[str, Any]]:
+        """BM25-only retrieval over the same collection, for the caller to merge.
+
+        mem0 already blends BM25 into the score of ids dense search returned;
+        this pass exists solely to rescue candidates dense search missed.
+        """
+        vector_store = getattr(self._memory, "vector_store", None)
+        if vector_store is None or not getattr(vector_store, "_has_bm25_slot", False):
+            return []
+        normalized = normalize(query).strip()
+        if not normalized:
+            return []
+        points = vector_store.keyword_search(
+            normalized,
+            top_k=max(limit * 4, 60),
+            filters={"user_id": self.collection},
+        )
+        out: list[dict[str, Any]] = []
+        for point in points or []:
+            payload = getattr(point, "payload", None) or {}
+            text = payload.get("data") or payload.get("text_lemmatized")
+            if not text:
+                continue
+            out.append(
+                {
+                    "id": str(getattr(point, "id", "")),
+                    "text": str(text),
+                    "metadata": {},
+                }
+            )
+        return out
 
     async def add(
         self,

@@ -47,12 +47,14 @@ def test_build_memory_reuses_instance(tmp_path: Path) -> None:
     assert a is b
 
 
-def test_mem0_search_uses_filters_not_top_level_user_id(monkeypatch, tmp_path: Path) -> None:
-    """Regression: search() passed user_id= at the top level and always failed.
+def test_mem0_search_uses_filters_and_top_k(monkeypatch, tmp_path: Path) -> None:
+    """Regression: search() passed user_id= at the top level and limit= as a no-op.
 
     mem0 v2 rejects top-level entity kwargs on search(), raising ValueError. A
     blanket ``except Exception`` then returned the empty fallback, so memory
-    search silently returned nothing regardless of what had been stored.
+    search silently returned nothing regardless of what had been stored. And
+    ``limit`` is not mem0's knob — it must be ``top_k`` or the default (20)
+    silently wins.
     """
     import asyncio
 
@@ -81,6 +83,7 @@ def test_mem0_search_uses_filters_not_top_level_user_id(monkeypatch, tmp_path: P
     assert captured["query"] == "coffee"
     assert "user_id" not in captured["kwargs"], "top-level user_id still passed"
     assert captured["kwargs"]["filters"] == {"user_id": "lattice-test"}
+    assert captured["kwargs"]["top_k"] == 5, "limit must reach mem0 as top_k"
     assert hits and hits[0]["text"] == "flat white"
 
 
@@ -345,12 +348,12 @@ def _fake_backend(tmp_path: Path, *, search_ok: bool = True) -> Mem0QdrantMemory
             self.rows[text] = text
             return {"results": [{"id": text, "memory": text, "event": "ADD"}]}
 
-        def search(self, query, *, filters=None, limit=5):
+        def search(self, query, *, filters=None, top_k=5):
             if not search_ok:
                 raise ValueError("search API mismatch")
             assert filters and "user_id" in filters, "probe/search must scope by filters"
             hits = [{"id": k, "memory": v, "metadata": {}} for k, v in self.rows.items()]
-            return {"results": hits[:limit]}
+            return {"results": hits[:top_k]}
 
         def delete(self, memory_id):
             self.rows.pop(memory_id, None)
