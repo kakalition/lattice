@@ -258,6 +258,220 @@ def test_search_tools_only_offered_with_a_nonempty_corpus(tmp_path: Path) -> Non
     assert rich["deferred_tools"] == ["generate_chart"]
 
 
+# --- BM25 search strategy --------------------------------------------------
+
+
+def test_tool_search_capability_maps_local_strategies() -> None:
+    from lattice.agent_app import tool_search_capability
+
+    bm25 = tool_search_capability("bm25")
+    assert callable(bm25.strategy), "bm25 must map to the local callable, never the native string"
+    assert bm25.strategy != "bm25"
+
+    assert tool_search_capability("keywords").strategy == "keywords"
+    # Unknown values fall back to the BM25 callable.
+    assert callable(tool_search_capability("nonsense").strategy)
+    # Backward-compatible no-arg call defaults to BM25.
+    assert callable(tool_search_capability().strategy)
+
+
+def test_tool_search_capability_carries_custom_description() -> None:
+    from lattice.agent_app import tool_search_capability
+
+    bm25 = tool_search_capability("bm25", tool_description="X", min_ratio=0.5)
+    assert callable(bm25.strategy)
+    assert bm25.tool_description == "X"
+
+    keywords = tool_search_capability("keywords", tool_description="Y")
+    assert keywords.strategy == "keywords"
+    assert keywords.tool_description == "Y"
+
+
+def test_build_search_description_lists_enabled_cold_core_tools(tmp_path: Path) -> None:
+    from lattice.agent_app import build_search_description
+    from lattice.mcp import McpHostManager
+
+    settings = LatticeSettings(home=tmp_path)
+    enabled = ["read_file", "shell", "browser_snapshot", "generate_chart", "sqlite_execute"]
+    desc = build_search_description(enabled, settings, McpHostManager())
+
+    assert "Deferred tools available via search_tools:" in desc
+    # Cold names, sorted, and only the policy-enabled ones.
+    assert (
+        desc.index("browser_snapshot") < desc.index("generate_chart") < desc.index("sqlite_execute")
+    )
+    assert "sqlite_backup" not in desc, "policy-denied cold tool leaked into the manifest"
+    # Eager tools are not advertised as discoverable.
+    assert "read_file" not in desc
+    assert "shell" not in desc
+    # Byte-stable across calls.
+    assert build_search_description(enabled, settings, McpHostManager()) == desc
+
+
+def test_build_search_description_unchanged_without_cold_tools(tmp_path: Path) -> None:
+    from pydantic_ai.toolsets._tool_search import _DEFAULT_TOOL_DESCRIPTION
+
+    from lattice.agent_app import build_search_description
+    from lattice.mcp import McpHostManager
+
+    settings = LatticeSettings(home=tmp_path)
+    desc = build_search_description(default_eager_names(), settings, McpHostManager())
+    assert desc == _DEFAULT_TOOL_DESCRIPTION
+    assert "search_tools" not in desc
+
+
+def test_build_search_description_mentions_deferred_mcp(tmp_path: Path) -> None:
+    from typing import Any, cast
+
+    from lattice.agent_app import build_search_description
+    from lattice.config import McpDeferMode, ToolsConfig
+    from lattice.mcp import McpHostManager
+
+    class _FakeMcp:
+        def enabled_tools(self) -> list[Any]:
+            return [object()]
+
+    defer = LatticeSettings(home=tmp_path, tools=ToolsConfig(mcp_defer=McpDeferMode.ALWAYS))
+    kept = LatticeSettings(home=tmp_path, tools=ToolsConfig(mcp_defer=McpDeferMode.NEVER))
+    enabled = ["read_file", "generate_chart"]
+
+    assert "Also deferred MCP tools." in build_search_description(
+        enabled, defer, cast(McpHostManager, _FakeMcp())
+    )
+    assert "Also deferred MCP tools." not in build_search_description(
+        enabled, kept, cast(McpHostManager, _FakeMcp())
+    )
+
+
+def test_build_search_description_mentions_deferred_user_tools(tmp_path: Path) -> None:
+    from lattice.agent_app import build_search_description
+    from lattice.config import ToolsConfig
+    from lattice.mcp import McpHostManager
+    from lattice.tools.user_tools import ToolHandler, UserToolSpec
+
+    spec = UserToolSpec(name="my_tool", handler=ToolHandler(code="print(1)"))
+    enabled = ["read_file", "generate_chart"]
+    cold = LatticeSettings(home=tmp_path, tools=ToolsConfig(cold=["my_tool"]))
+    eager = LatticeSettings(home=tmp_path)
+
+    assert "Also deferred user tools." in build_search_description(
+        enabled, cold, McpHostManager(), [spec]
+    )
+    assert "Also deferred user tools." not in build_search_description(
+        enabled, eager, McpHostManager(), [spec]
+    )
+
+
+def test_search_min_ratio_defaults_and_bounds(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+
+    from lattice.config import ToolsConfig
+
+    assert LatticeSettings(home=tmp_path).tools.search_min_ratio == 0.35
+    zero = LatticeSettings(home=tmp_path, tools=ToolsConfig(search_min_ratio=0.0))
+    assert zero.tools.search_min_ratio == 0.0
+    with pytest.raises(ValidationError):
+        ToolsConfig(search_min_ratio=1.5)
+    with pytest.raises(ValidationError):
+        ToolsConfig(search_min_ratio=-0.1)
+
+
+def test_bm25_search_fn_reveals_cold_tool_end_to_end(tmp_path: Path) -> None:
+    """The callable is wired through the agent, not just unit-tested."""
+    import asyncio
+
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+
+    from lattice.agent_app import build_core_toolset, tool_search_capability
+    from lattice.mcp import McpHostManager
+
+    settings = LatticeSettings(home=tmp_path)
+    deps = _deps_for(settings, ["read_file", "generate_chart"])
+    calls = {"n": 0}
+
+    async def fn(messages, info):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ModelResponse(parts=[ToolCallPart("search_tools", {"queries": ["chart"]})])
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent: Agent[type(deps), str] = Agent(  # type: ignore[valid-type]
+        FunctionModel(fn),
+        deps_type=type(deps),
+        system_prompt="t",
+        toolsets=[build_core_toolset(settings, McpHostManager())],
+        capabilities=[tool_search_capability("bm25")],
+    )
+    result = asyncio.run(agent.run("hi", deps=deps))
+
+    returns = [
+        part
+        for message in result.all_messages()
+        for part in getattr(message, "parts", [])
+        if isinstance(part, ToolReturnPart) and part.tool_name == "search_tools"
+    ]
+    assert returns, "search_tools was never executed"
+    from typing import Any, cast
+
+    content = cast("dict[str, Any]", returns[0].content)
+    assert [match["name"] for match in content["discovered_tools"]] == ["generate_chart"]
+
+
+def test_revealed_tool_is_appended_after_eager_tools(tmp_path: Path) -> None:
+    """Reveals extend the cached prefix instead of shifting eager tool positions."""
+    import asyncio
+
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+
+    from lattice.agent_app import build_core_toolset, tool_search_capability
+    from lattice.mcp import McpHostManager
+    from lattice.tools.user_tools import ToolHandler, UserToolSpec
+
+    # An eager *user* tool is the regression trap: before the reorder it was
+    # appended after the deferred core block, so a revealed cold tool landed
+    # ahead of it instead of after every eager tool.
+    user_spec = UserToolSpec(name="my_eager_tool", handler=ToolHandler(code="print(1)"))
+
+    settings = LatticeSettings(home=tmp_path)
+    deps = _deps_for(settings, [*default_eager_names(), "my_eager_tool", "generate_chart"])
+    offered: list[list[str]] = []
+    calls = {"n": 0}
+
+    async def fn(messages, info):  # type: ignore[no-untyped-def]
+        offered.append([t.name for t in info.function_tools])
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ModelResponse(parts=[ToolCallPart("search_tools", {"queries": ["chart"]})])
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent: Agent[type(deps), str] = Agent(  # type: ignore[valid-type]
+        FunctionModel(fn),
+        deps_type=type(deps),
+        system_prompt="t",
+        toolsets=[build_core_toolset(settings, McpHostManager(), user_tools=[user_spec])],
+        capabilities=[tool_search_capability("bm25")],
+    )
+    asyncio.run(agent.run("hi", deps=deps))
+
+    assert len(offered) >= 2, f"expected a search round-trip, got {len(offered)} request(s)"
+    first, second = offered[0], offered[1]
+    assert "search_tools" in first
+    assert "generate_chart" not in first, "cold tool leaked into the first request"
+    assert "my_eager_tool" in first, "eager user tool missing from the first request"
+    assert "generate_chart" in second, "revealed tool missing from the follow-up request"
+
+    eager_positions = [
+        second.index(name) for name in [*default_eager_names(), "my_eager_tool"] if name in second
+    ]
+    assert eager_positions
+    assert second.index("generate_chart") > max(eager_positions), (
+        "reveal interleaved with eager tools"
+    )
+    assert second.index("generate_chart") < second.index("search_tools")
+
+
 def test_calling_a_denied_tool_never_executes(tmp_path: Path) -> None:
     """Last line of defence: a denied tool is unrunnable even if the model insists.
 

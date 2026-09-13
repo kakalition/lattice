@@ -153,6 +153,8 @@ tools:
   deny: []
   mcp_defer: auto                  # always | auto | never
   mcp_defer_threshold: 8
+  search_strategy: bm25            # bm25 (default) | keywords
+  search_min_ratio: 0.35           # drop BM25 matches under this fraction of the top score; 0 disables
 
 browser:
   channel: auto                    # auto | chrome | chromium (auto prefers system Chrome)
@@ -256,7 +258,14 @@ top.
 ### Discovery tools
 
 `tool_search`, `tool_describe`, and `tool_invoke` expose the cold tier on demand. On
-providers without native tool search, a pinned `search_tools` fallback is used instead.
+providers without native tool search, a pinned `search_tools` fallback ranks deferred
+tools with in-process BM25 (IDF-weighted, so rare discriminating terms beat ubiquitous
+ones; a curated per-tool alias table adds recall for terms like "graph" or "plot").
+The `search_tools` description also lists the enabled cold core tools, so the model can
+see what discovery reaches without a speculative search. `tools.search_min_ratio`
+(default `0.35`) drops matches scoring below that fraction of the best match while always
+keeping the top hit; `0` disables trimming. Set `tools.search_strategy: keywords` to
+revert to the legacy token-overlap ranking.
 
 ### Tiers and policy
 

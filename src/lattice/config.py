@@ -49,6 +49,12 @@ class ToolsConfig(BaseModel):
     # ``cold`` wins when a name matches both.
     eager: list[str] = Field(default_factory=list)
     cold: list[str] = Field(default_factory=list)
+    # Local deferred-tool ranking algorithm (not the provider-native strategy).
+    # ``bm25`` runs the in-process scorer; ``keywords`` keeps pydantic-ai's overlap.
+    search_strategy: Literal["bm25", "keywords"] = "bm25"
+    # Trim BM25 matches scoring below this fraction of the top score. The best
+    # match is always kept; ``0`` disables trimming.
+    search_min_ratio: float = Field(default=0.35, ge=0.0, le=1.0)
 
 
 class ChannelToolsConfig(BaseModel):
@@ -379,6 +385,10 @@ tools:
   allow: ["*"]
   deny: []
   mcp_defer: auto
+  # Local deferred-tool ranking: bm25 (default) | keywords.
+  search_strategy: bm25
+  # Drop BM25 matches scoring below this fraction of the best match; 0 disables.
+  search_min_ratio: 0.35
   # Optional: override which tools ship eagerly vs. behind tool search.
   # Glob patterns; `cold` wins on conflict. Empty = use each tool's built-in tier.
   eager: []   # e.g. ["web_*", "sqlite_*"]

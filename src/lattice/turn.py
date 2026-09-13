@@ -22,6 +22,7 @@ from lattice.agent_app import (
     TurnDeps,
     build_memory_for_profile,
     build_prompt_bundle,
+    build_search_description,
     create_agent,
     resolve_enabled_tools,
 )
@@ -456,6 +457,7 @@ async def run_turn(
         mcp=mcp,
         user_tools=user_specs,
         model_settings=cache_settings,
+        search_description=build_search_description(enabled, settings, mcp, user_specs),
     )
 
     async def _on_stream(_ctx: Any, stream_events: Any) -> None:

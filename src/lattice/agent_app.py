@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import Any
 
 from pydantic_ai import Agent
@@ -31,6 +32,25 @@ from lattice.tools.agent import build_toolsets, resolve_tier
 from lattice.tools.user_tools import UserToolset, UserToolSpec
 
 logger = logging.getLogger("lattice.agent_app")
+
+# Framework default guidance for the ``search_tools`` description. Imported from
+# pydantic-ai so wording tracks upstream; a local fallback keeps us working if the
+# private path moves (behaviour degrades to our guidance instead of crashing).
+try:  # pragma: no cover - exercised implicitly by the import
+    from pydantic_ai.toolsets._tool_search import (
+        _DEFAULT_TOOL_DESCRIPTION as _BASE_SEARCH_DESCRIPTION,
+    )
+except ImportError:  # pragma: no cover
+    _BASE_SEARCH_DESCRIPTION = (
+        "Search first for a standalone deferred tool when current tools and catalog"
+        " descriptions do not name the requested operation. A capability id used as an"
+        " ordinary domain word does not request that capability. This cannot find"
+        " capability-owned tools; load a listed capability by id instead. If no tools"
+        " are found, do not retry."
+    )
+
+# Cap the enumerated cold-tool manifest so the description cannot grow unbounded.
+_MANIFEST_MAX_NAMES = 30
 
 # Tool definition bytes must stay stable across turns so provider-side cache
 # prefixes survive; rebuilding toolsets per turn reorders MCP schemas. The cache
@@ -150,7 +170,11 @@ def build_core_toolset(
     def _build() -> AbstractToolset[TurnDeps]:
         from pydantic_ai.toolsets import DeferredLoadingToolset
 
-        toolsets: list[AbstractToolset[TurnDeps]] = list(
+        # ``build_toolsets`` returns ``[eager, deferred-cold?]``. Keep every
+        # eager toolset ahead of every deferred one so a revealed tool is a pure
+        # suffix of the request's tools array: the cached prefix only grows,
+        # instead of shifting when a cold user/MCP tool interleaves.
+        built = list(
             build_toolsets(
                 exclude=exclude,
                 eager=settings.tools.eager,
@@ -158,19 +182,24 @@ def build_core_toolset(
                 defer_cold=True,
             )
         )
+        eager: list[AbstractToolset[TurnDeps]] = [built[0]]
+        deferred: list[AbstractToolset[TurnDeps]] = list(built[1:])
+
         if specs:
             eager_specs = [s for s in specs if _user_tool_tier(settings, s) is ToolTier.EAGER]
             cold_specs = [s for s in specs if _user_tool_tier(settings, s) is ToolTier.COLD]
             if eager_specs:
-                toolsets.append(UserToolset(eager_specs))
+                eager.append(UserToolset(eager_specs))
             if cold_specs:
-                toolsets.append(DeferredLoadingToolset(UserToolset(cold_specs)))
+                deferred.append(DeferredLoadingToolset(UserToolset(cold_specs)))
         if mcp.enabled_tools():
             mcp_toolset: AbstractToolset[TurnDeps] = McpToolset(mcp)
             if should_defer_mcp(mcp, settings.tools):
-                mcp_toolset = DeferredLoadingToolset(mcp_toolset)
-            toolsets.append(mcp_toolset)
+                deferred.append(DeferredLoadingToolset(mcp_toolset))
+            else:
+                eager.append(mcp_toolset)
 
+        toolsets = eager + deferred
         combined: AbstractToolset[TurnDeps] = (
             CombinedToolset(toolsets) if len(toolsets) > 1 else toolsets[0]
         )
@@ -179,15 +208,72 @@ def build_core_toolset(
     return _cached_toolset(key, _build)
 
 
-def tool_search_capability() -> Any:
-    """Force the local ``search_tools`` fallback.
+def build_search_description(
+    enabled: Sequence[str],
+    settings: LatticeSettings,
+    mcp: McpHostManager,
+    user_tools: Sequence[UserToolSpec] = (),
+) -> str:
+    """Model-facing description for ``search_tools``, listing discoverable cold tools.
+
+    Enumerating the enabled cold *core* names (sorted for byte stability) tells the
+    model what discovery can reach without a speculative search. MCP/user tools
+    contribute a generic phrase only, so per-server churn cannot change the bytes.
+    Policy-denied tools are absent because ``enabled`` is already filtered.
+    """
+    cold_core = sorted(
+        name
+        for name in enabled
+        if name in CORE_TOOL_NAMES
+        and resolve_tier(name, eager=settings.tools.eager, cold=settings.tools.cold)
+        is ToolTier.COLD
+    )
+    if not cold_core:
+        return _BASE_SEARCH_DESCRIPTION
+
+    shown = cold_core[:_MANIFEST_MAX_NAMES]
+    listing = ", ".join(shown)
+    if len(cold_core) > _MANIFEST_MAX_NAMES:
+        listing = f"{listing} (+{len(cold_core) - _MANIFEST_MAX_NAMES} more)"
+
+    parts = [f"{_BASE_SEARCH_DESCRIPTION} Deferred tools available via search_tools: {listing}."]
+    if mcp.enabled_tools() and should_defer_mcp(mcp, settings.tools):
+        parts.append("Also deferred MCP tools.")
+    if any(_user_tool_tier(settings, spec) is ToolTier.COLD for spec in user_tools):
+        parts.append("Also deferred user tools.")
+    return " ".join(parts)
+
+
+def tool_search_capability(
+    strategy: str = "bm25",
+    *,
+    tool_description: str | None = None,
+    min_ratio: float = 0.35,
+) -> Any:
+    """Force a local ``search_tools`` fallback with the chosen ranking algorithm.
 
     The capability is auto-injected, but on providers without a native tool-search
     surface (OpenAI chat completions) the default strategy emits no discovery tool
-    at all, leaving deferred tools unreachable. Pinning ``keywords`` guarantees a
-    callable ``search_tools`` function on every provider.
+    at all, leaving deferred tools unreachable. Pinning a *local* strategy
+    guarantees a callable ``search_tools`` on every provider.
+
+    ``bm25`` (default) plugs our in-process BM25 scorer in as a callable. The
+    provider-native ``"bm25"`` string must never be passed to ``ToolSearch`` — that
+    commits to Anthropic's server-side strategy and raises on OpenAI-compatible
+    models. ``keywords`` keeps pydantic-ai's built-in overlap algorithm; unknown
+    values fall back to ``bm25``.
+
+    ``tool_description`` replaces the shipped guidance (the cold-tool manifest);
+    ``min_ratio`` trims weak BM25 matches relative to the top score.
     """
-    return ToolSearch(strategy="keywords")
+    if strategy == "keywords":
+        return ToolSearch(strategy="keywords", tool_description=tool_description)
+    from lattice.tool_search import bm25_search_fn
+
+    return ToolSearch(
+        strategy=partial(bm25_search_fn, min_ratio=min_ratio),
+        tool_description=tool_description,
+    )
 
 
 def create_agent(
@@ -201,6 +287,7 @@ def create_agent(
     toolsets: Sequence[AbstractToolset[TurnDeps]] | None = None,
     user_tools: Sequence[UserToolSpec] = (),
     model_settings: ModelSettings | None = None,
+    search_description: str | None = None,
 ) -> Agent[TurnDeps, str]:
     from lattice.providers.settings import resolve_model_id
 
@@ -226,7 +313,13 @@ def create_agent(
         deps_type=TurnDeps,
         system_prompt=system_prompt,
         toolsets=built,
-        capabilities=[tool_search_capability()],
+        capabilities=[
+            tool_search_capability(
+                settings.tools.search_strategy,
+                tool_description=search_description,
+                min_ratio=settings.tools.search_min_ratio,
+            )
+        ],
         model_settings=model_settings,
     )
 
