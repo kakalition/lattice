@@ -47,9 +47,10 @@ stays inspectable.
   cache-stable prefix and a small per-turn tail. Compression protects your most recent
   messages, never splits tool call/result pairs, and carries a compact action ledger,
   recent evidence, and open todos across the boundary.
-- **Tools that scale without bloating the prompt.** A small eager set is always visible;
-  everything else stays behind a fast, in-process search that works even on providers with
-  no native tool search. MCP servers are deferred automatically as the tool list grows.
+- **Tools that scale without bloating the prompt.** 38 built-ins live in 11 reserved
+  namespaces; a 20-tool eager set is always visible and the rest stays behind a fast,
+  in-process `search_tools` that works even on providers without native tool search. External
+  MCP servers join the same namespace scheme and defer automatically as the list grows.
 - **Extensible with plain files, not forks.** Add a skill (`SKILL.md`), a script, a
   declarative tool (`tools/<name>.yaml`), or a profile and persona — changes are live on the
   next turn. No rebuild, no plugin API.
@@ -68,6 +69,12 @@ stays inspectable.
 - [CLI Reference](#cli-reference)
 - [Profiles](#profiles)
 - [Tools](#tools)
+  - [Names: canonical vs. wire](#names-canonical-vs-wire)
+  - [Core tools](#core-tools)
+  - [Discovery](#discovery)
+  - [Tiers and policy](#tiers-and-policy)
+  - [MCP servers](#mcp-servers)
+  - [Tool middleware](#tool-middleware)
 - [Skills](#skills)
 - [Memory & Sessions](#memory--sessions)
 - [Scheduler & Reminders](#scheduler--reminders)
@@ -124,14 +131,15 @@ stays inspectable.
 - **Profiles & personas** — a per-profile persona (`SOUL.md`), durable user notes
   (`USER.md`), and tool/skill/model/database policy that apply live on the next turn.
 - **Skills** — readable `SKILL.md` instructions that load only when relevant.
-- **Custom tools** — declare a tool in `tools/<name>.yaml` and it is callable next turn.
-- **MCP** — attach Model Context Protocol servers as tools, deferred automatically once the
-  tool list grows large.
+- **Custom tools** — declare a tool in `tools/<name>.yaml`; it appears as `user/<name>` and
+  flows through the same policy and approval gate as built-ins.
+- **MCP** — attach Model Context Protocol servers over stdio or HTTP; their tools appear as
+  `server/tool` and defer automatically once the tool list grows large.
 
 ### You can see and improve it
 
-- **Tool discovery** — cold tools are found by a fast local search instead of bloating every
-  request.
+- **Tool discovery** — cold tools are found via `search_tools` instead of bloating every
+  request; a curated alias table keeps natural-language queries working.
 - **Prompt caching** — a stable prefix plus session pinning keeps costs down on providers
   that support caching.
 - **Observability** — one structured record per turn, and `lattice stats` for outcomes,
@@ -142,9 +150,11 @@ stays inspectable.
 ## Architecture
 
 Every channel converges on `run_turn`, the thin waist. The waist assembles the prompt,
-applies profile and channel policy, runs HITL, and drives a pydantic-ai agent loop that can
-call eager tools, deferred (cold) tools, user-defined tools, and MCP toolsets. Side systems
-provide memory, session persistence, providers, the scheduler, and approvals.
+applies profile and channel policy, and drives a pydantic-ai agent loop. All tools — the 11
+built-in groups (eager and deferred), user tools, and external MCP servers — are offered to
+the model under one `group__leaf` wire scheme and pass through a single `GuardedToolset`
+(precheck → approval → traced). Side systems provide memory, session persistence, providers,
+the scheduler, and approvals.
 
 ```mermaid
 flowchart TD
@@ -159,10 +169,11 @@ flowchart TD
     WAIST["run_turn — the thin waist<br/>prompt build · policy · budget · compression"]
     WAIST --> AGENT["pydantic-ai agent loop<br/>one resolved model per turn"]
 
-    AGENT --> EAGER["Eager tools"]
-    AGENT --> COLD["Cold / deferred tools<br/>tool_search · tool_describe · tool_invoke"]
-    AGENT --> USER["User tools<br/>tools/*.yaml"]
-    AGENT --> MCP["MCP servers<br/>McpHostManager"]
+    AGENT --> GUARD["GuardedToolset<br/>precheck → approval → traced"]
+    GUARD --> EAGER["Eager groups<br/>files · web · compute · interaction · memory · skills"]
+    GUARD --> COLD["Cold groups (deferred)<br/>found via search_tools"]
+    GUARD --> USER["User tools<br/>user/&lt;name&gt; from tools/*.yaml"]
+    GUARD --> MCP["MCP servers<br/>server/tool · stdio and HTTP"]
 
     WAIST --> HITL["HITL approvals<br/>CLI · Telegram · auto"]
     WAIST --> CTX["Context compressor<br/>protect_last_n"]
@@ -290,7 +301,7 @@ Secrets come only from the project `.env` (see [`.env.example`](.env.example)):
 |---------|---------|---------------|
 | `lattice version` | Print the version. | — |
 | `lattice init` | Create the `.lattice` layout, default profile, and skill starters. | `--reset` (archive + wipe first), `--home` |
-| `lattice doctor` | Diagnose config, keys, and profiles. | `--home` |
+| `lattice doctor` | Diagnose config, keys, profiles, tool groups, and MCP servers. | `--home` |
 | `lattice chat` | Interactive chat (CLI or TUI). | `-p/--profile`, `--tui`, `-w` (workspace), `--echo` |
 | `lattice gateway` | Run the Telegram bot and scheduler gateway (pidfile-locked). | `--once` (one scheduler pass, no Telegram) |
 | `lattice backup` | Compile `.lattice` into a portable archive. | `-o/--output`, `--include-logs`, `--home` |
@@ -337,69 +348,113 @@ memory:
 
 ## Tools
 
-Lattice ships a core tool set and layers deferred discovery, user-defined tools, and MCP on
-top.
+Lattice ships **38 built-in tools** across **11 reserved namespaces**, then layers deferred
+discovery, user-defined tools, and external MCP servers on top — all sharing one identity
+scheme and one safety gate.
+
+### Names: canonical vs. wire
+
+Every tool has two spellings, and the split is deliberate:
+
+| Form | Example | Used by |
+|------|---------|---------|
+| **Canonical** `group/leaf` | `sqlite/execute` | `lattice.yaml`, profiles, HITL, audit, the action ledger, `lattice stats` |
+| **Wire** `group__leaf` | `sqlite__execute` | the model's tool list and tool calls |
+
+Providers reject `/` in function names, so the wire form joins the segments with `__` (which
+never appears inside a group or leaf). The two forms map bijectively. Legacy flat names
+(`sqlite_execute`) and `prefix_*` globs (`sqlite_*`) are normalized on load, so older config
+and profiles keep working.
 
 ### Core tools
 
-Built-ins are grouped into MCP-shaped namespaces. **Canonical** names (`group/leaf`) are
-what operator config, HITL, audit, and the ledger use; the **model** sees and calls the wire
-form `group__leaf` (double underscore), because providers reject `/` in function names.
-Legacy flat names (`sqlite_execute`) and `prefix_*` globs (`sqlite_*`) are normalized on load.
+Built-ins are grouped by domain. The **group** is the namespace prefix; the tools below are
+shown as leaves, so `files/shell` is the canonical name and `files__shell` the wire name.
+**Eager** tools ship in every request; **cold** tools stay behind `search_tools`.
 
-| Group | Tools (canonical) |
-|--------|-------|
-| `files` | `files/shell`, `files/read`, `files/write`, `files/edit`, `files/remove`, `files/search` |
-| `media` | `media/ocr`, `media/pdf`, `media/chart` |
-| `web` | `web/search`, `web/fetch` |
-| `browser` | `browser/interact`, `browser/snapshot` |
-| `compute` | `compute/script`, `compute/calculator` |
-| `interaction` | `interaction/clarify`, `interaction/todo` |
-| `schedule` | `schedule/add`, `schedule/list`, `schedule/cancel`, `schedule/timezone_get`, `schedule/timezone_set` |
-| `memory` | `memory/session_search`, `memory/search`, `memory/add`, `memory/update`, `memory/forget` |
-| `sqlite` | `sqlite/list`, `sqlite/schema`, `sqlite/query`, `sqlite/execute`, `sqlite/register`, `sqlite/unregister`, `sqlite/backup` |
-| `skills` | `skills/list`, `skills/view` |
-| `profiles` | `profiles/list`, `profiles/remove` |
+| Group | Eager (always visible) | Cold (behind `search_tools`) |
+|-------|------------------------|------------------------------|
+| `files` | `shell` · `read` · `write` · `edit` · `remove` · `search` | — |
+| `media` | `ocr` | `pdf` · `chart` |
+| `web` | `search` · `fetch` | — |
+| `browser` | — | `interact` · `snapshot` |
+| `compute` | `calculator` | `script` |
+| `interaction` | `clarify` · `todo` | — |
+| `schedule` | `add` | `list` · `cancel` · `timezone_get` · `timezone_set` |
+| `memory` | `session_search` · `search` · `add` | `update` · `forget` |
+| `sqlite` | `schema` · `query` | `list` · `execute` · `register` · `unregister` · `backup` |
+| `skills` | `list` · `view` | — |
+| `profiles` | — | `list` · `remove` |
 
-The 11 group names are reserved: user tools live under `user/<name>` and external MCP tools
-under `server/tool`, so a server cannot shadow a built-in group.
+That is 20 eager and 18 cold by default. `compute/script` prefers **bubblewrap** (`bwrap`) for
+sandboxing, with network off by default; `scripts.require_bwrap: true` refuses to run without a
+sandbox (recommended on Linux — macOS falls back to a softer sandbox).
 
-### Discovery tools
+### Discovery
 
-`tool_search`, `tool_describe`, and `tool_invoke` expose the cold tier on demand. On
-providers without native tool search, a pinned `search_tools` fallback ranks deferred
-tools with in-process BM25 (IDF-weighted, so rare discriminating terms beat ubiquitous
-ones; a curated per-tool alias table adds recall for terms like "graph" or "plot").
-The `search_tools` description also lists the enabled cold core tools, so the model can
-see what discovery reaches without a speculative search. `tools.search_min_ratio`
-(default `0.35`) drops matches scoring below that fraction of the best match while always
-keeping the top hit; `0` disables trimming. Set `tools.search_strategy: keywords` to
-revert to the legacy token-overlap ranking.
+Cold tools are reached with the `search_tools` tool, ranked by an in-process BM25 scorer
+(IDF-weighted, so rare discriminating terms beat common ones, with a curated alias table that
+maps "graph"/"plot" to `media/chart`, "database" to `sqlite/*`, and so on). The tool
+description lists the enabled cold core tools, so the model knows what is reachable without a
+speculative search. Lattice pins this local fallback even on providers that offer native tool
+search, so discovery behaves the same everywhere.
+
+- `tools.search_min_ratio` (default `0.35`) drops matches scoring below that fraction of the
+  best match while always keeping the top hit; `0` disables trimming.
+- `tools.search_strategy: keywords` reverts to the simpler token-overlap ranking.
 
 ### Tiers and policy
 
-- **Eager** tools are always visible; **cold** tools are deferred behind discovery.
-  Configure with `tools.eager` / `tools.cold` fnmatch globs matched against canonical
-  `group/leaf` names (and built-in defaults).
-- **MCP tools** connect to external servers over stdio (`command`/`args`) or streamable HTTP
-  (`url`) and are exposed as `server/tool` (wire `server__tool`). `tools.mcp_defer` chooses
-  `always`, `auto`, or `never`; `auto` defers once tools exceed `tools.mcp_defer_threshold`
-  (default `8`). A server may not reuse one of the 11 built-in group names, and its tool
-  names are validated against the provider grammar at discovery.
-- **User tools** are declared in `tools/<name>.yaml`, exposed as `user/<name>`, and flow
-  through the same policy and HITL checks.
-- `compute/script` prefers **bubblewrap** (`bwrap`) for sandboxing. Network access is off by
-  default, and `scripts.require_bwrap: true` refuses to run without a sandbox (recommended on
-  Linux; macOS falls back to a softer sandbox).
+- **Tiering.** `tools.eager` / `tools.cold` are fnmatch globs matched against canonical
+  `group/leaf` names (`cold` wins on a conflict). Every eager group is emitted before any
+  deferred group, so a tool revealed by search is a pure suffix of the request's tool list —
+  the cached prompt prefix only ever grows.
+- **Allow / deny.** Project `tools.allow` / `tools.deny`, profile `tools.allow` / `tools.deny`,
+  and per-channel `telegram.tools` compose together; **deny always wins**, and a denied tool is
+  dropped from both the eager set and the discovery corpus.
+- **Budgets.** `agent.iteration_budget` caps tool-calling loops; the consecutive-denial and
+  repeated-failure breakers stop it retrying the same thing.
+
+### MCP servers
+
+External [Model Context Protocol](https://modelcontextprotocol.io/) servers are first-class
+tools with the same identity, policy, and safety gate as built-ins.
+
+- **Transports.** stdio (`command` + `args` + `env`) or streamable HTTP (`url`).
+- **Discovery.** Each turn Lattice connects to every enabled server concurrently, pages
+  through `list_tools`, and registers what it finds. A server that fails contributes a
+  `[notice]` — it never fails the turn, and other servers keep working.
+- **Naming.** Tools become `server/tool` (wire `server__tool`). The 11 group names are
+  reserved, so a server cannot shadow a built-in namespace, and every server/tool name is
+  validated against the provider function-name grammar at discovery.
+- **Deferral.** `tools.mcp_defer` is `always`, `auto`, or `never`; `auto` defers once the
+  discovered tool count passes `tools.mcp_defer_threshold` (default `8`).
+
+```yaml
+mcp:
+  enabled: true
+  servers:
+    - name: filesystem
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      env: {}
+    # - name: remote
+    #   url: https://example.com/mcp
+```
 
 ### Tool middleware
 
-Every tool call — built-in, user, or external MCP — passes through one
-`GuardedToolset` seam in the same order: **precheck** (tool-specific validation that
-must run before any prompt, e.g. an out-of-jail removal), **approval** (`HITL`, driven
-by a per-tool policy or the built-in `tool_needs_approval` rules), then **`traced`**
-execution (turn events, result truncation, and the repeated-failure breaker). Tool
-bodies stay pure, so policy, audit, the action ledger, live-status, and the media
+Every call — built-in, user (`user/<name>`), or external (`server/tool`) — passes through one
+`GuardedToolset` seam, in the same order:
+
+1. **precheck** — tool-specific validation that must run before any prompt (for example, an
+   out-of-jail removal or an invalid profile id). A failure short-circuits without asking.
+2. **approval** — HITL via a per-tool policy or the built-in `tool_needs_approval` rules, with
+   remembered approvals and a consecutive-denial breaker.
+3. **traced** — turn events, result truncation (head + tail with a scratch reference), and the
+   repeated-failure breaker.
+
+Tool bodies stay pure, so policy, audit, the action ledger, live-status, and the media
 snapshot hook behave identically whether a call is internal or over MCP.
 
 ## Skills
@@ -501,6 +556,11 @@ integration tests run when `OPENROUTER_API_KEY` is available.
 - **HITL by default:** high-blast-radius actions are approval-gated. Adapters include
   `CliHitlAdapter`, `TelegramHitlAdapter`, and `AutoApproveHitl`; approvals are remembered and
   a consecutive-denial breaker stops repeated prompting.
+- **One gate for every tool:** built-in, user (`user/<name>`), and MCP (`server/tool`) tools
+  all pass through the same precheck → approval → traced path, so nothing bypasses HITL,
+  truncation, or the audit trail.
+- **MCP validation:** server and tool names are checked against the provider function-name
+  grammar, tool names may not contain `__`, and built-in group names cannot be shadowed.
 - **Auditing:** HITL decisions are written to `audit.jsonl`.
 - **Secret hygiene:** secrets live only in `.env`; YAML is scrubbed of secret fields, and the
   system soul instructs the agent never to place secrets in files, scripts, or skills.
@@ -514,11 +574,12 @@ integration tests run when `OPENROUTER_API_KEY` is available.
 ```
 src/lattice/
 ├── turn.py, agent_app.py, prompt.py, session.py, config.py, events.py, cli.py   # thin waist
+├── tool_names.py  # canonical ⇄ wire tool-name registry and tiers
 ├── channel/     # cli, tui, telegram adapters
 ├── hitl/        # approval adapters, policy, audit
 ├── context/     # context compression
-├── tools/       # core tools
-├── mcp/         # MCP host manager and toolsets
+├── tools/       # groups/ (11 namespaces), middleware.py (GuardedToolset), user_tools.py
+├── mcp/         # MCP host (stdio + streamable HTTP), toolset, deferral bridge
 ├── skills/      # skill loading and progressive disclosure
 ├── profiles/    # persona + policy loading
 ├── memory/      # mem0 + Qdrant worker
