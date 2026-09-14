@@ -98,7 +98,7 @@ async def test_multi_turn_row_reuses_session(tmp_path: Path) -> None:
         '"channel":"cli","profile_id":"default"},'
         '"turns":[{"text":"What does note.txt say now?","channel":"cli",'
         '"profile_id":"default"}],"files":{"note.txt":"hello world"},'
-        '"expect":{"tools":["read_file"],"output_contains":["hello world"],'
+        '"expect":{"tools":["files/read"],"output_contains":["hello world"],'
         '"no_prompt_drift":true,"max_requests":4},"cassette":"read_reread.jsonl"}\n',
         encoding="utf-8",
     )
@@ -107,7 +107,7 @@ async def test_multi_turn_row_reuses_session(tmp_path: Path) -> None:
     assert row.passed, row.assertions
     assert row.prompt_drift is False
     assert row.requests == 4
-    assert row.tools == ["read_file", "read_file"]
+    assert row.tools == ["files/read", "files/read"]
 
 
 @pytest.mark.asyncio

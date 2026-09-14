@@ -38,7 +38,9 @@ async def deliver_telegram(settings: LatticeSettings, outbound: Outbound) -> Non
                 try:
                     await bot.send_message(**kwargs)
                 except Exception:
-                    logger.exception("telegram HTML send failed chat_id=%s; retrying plain", chat_id)
+                    logger.exception(
+                        "telegram HTML send failed chat_id=%s; retrying plain", chat_id
+                    )
                     plain = chunk_text(outbound.text)
                     await bot.send_message(
                         chat_id=chat_id,

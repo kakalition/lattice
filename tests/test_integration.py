@@ -109,10 +109,10 @@ async def _run_live(tmp_path: Path, allowed: list[str], prompt: str):
     """Run one real turn and return (result, tool names called)."""
     from pydantic_ai import Agent
     from pydantic_ai.messages import ToolCallPart
+    from tests.test_toolsets_tiers import _deps_for
 
     from lattice.agent_app import (
         build_core_toolset,
-        resolve_enabled_tools,
         tool_search_capability,
     )
     from lattice.deps import TurnDeps
@@ -120,7 +120,6 @@ async def _run_live(tmp_path: Path, allowed: list[str], prompt: str):
     from lattice.profiles import get_profile
     from lattice.providers.openai_compat import build_openai_model
     from lattice.providers.settings import resolve_model_id
-    from tests.test_toolsets_tiers import _deps_for
 
     settings = _live_settings(tmp_path)
     mcp = McpHostManager()
@@ -168,7 +167,7 @@ async def test_live_cold_tool_is_discovered_and_executed(tmp_path: Path) -> None
     settings = _live_settings(tmp_path)
     profile = get_profile("default", settings.home)
     enabled = resolve_enabled_tools(settings, profile, channel="cli", mcp=McpHostManager())
-    assert "schedule_add" in enabled
+    assert "schedule/add" in enabled
 
     _, called = await _run_live(
         tmp_path,
@@ -176,7 +175,7 @@ async def test_live_cold_tool_is_discovered_and_executed(tmp_path: Path) -> None
         "Schedule a reminder to buy milk tomorrow at 9am.",
     )
     assert "search_tools" in called, "model never searched for the cold tool"
-    assert "schedule_add" in called, "cold tool was not executable after discovery"
+    assert "schedule__add" in called, "cold tool was not executable after discovery"
     assert (tmp_path / "scheduler" / "jobs.json").exists()
 
 
@@ -186,10 +185,10 @@ async def test_live_eager_tool_needs_no_discovery_round_trip(tmp_path: Path) -> 
     """Tiering must not over-defer: an eager tool is callable immediately."""
     _, called = await _run_live(
         tmp_path,
-        ["todo", "read_file", "search_tools"],
+        ["interaction/todo", "files/read", "search_tools"],
         "Add 'buy milk' to my todo list.",
     )
-    assert "todo" in called
+    assert "interaction__todo" in called
     assert "search_tools" not in called, "eager tool wrongly required discovery"
 
 
@@ -204,7 +203,7 @@ async def test_live_search_cannot_bypass_policy(tmp_path: Path) -> None:
     """
     _, called = await _run_live(
         tmp_path,
-        ["read_file", "timezone_get"],  # schedule_add deliberately withheld
+        ["files/read", "schedule/timezone_get"],  # schedule/add deliberately withheld
         "Schedule a reminder to buy milk tomorrow at 9am. Search for a tool if needed.",
     )
-    assert "schedule_add" not in called, "denied cold tool was reachable via search"
+    assert "schedule__add" not in called, "denied cold tool was reachable via search"

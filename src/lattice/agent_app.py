@@ -28,8 +28,10 @@ from lattice.profiles import Profile, apply_name, merge_tool_policy, system_soul
 from lattice.prompt import PromptBundle, build_skill_index_xml
 from lattice.providers import build_openai_model
 from lattice.providers.logging_model import with_llm_logging
-from lattice.tools.agent import build_toolsets, resolve_tier
-from lattice.tools.user_tools import UserToolset, UserToolSpec
+from lattice.tool_names import canonical_name, matches, normalize_pattern, wire_name
+from lattice.tools.groups import CORE_POLICIES, build_toolsets, resolve_tier
+from lattice.tools.middleware import DEFAULT_POLICY, GuardedToolset, ToolPolicy
+from lattice.tools.user_tools import UserToolset, UserToolSpec, user_tool_policy
 
 logger = logging.getLogger("lattice.agent_app")
 
@@ -95,7 +97,8 @@ def filter_enabled(toolset: AbstractToolset[TurnDeps]) -> AbstractToolset[TurnDe
 
     def _keep(ctx: Any, tool_def: Any) -> bool:
         enabled = getattr(ctx.deps, "enabled_tools", None) or []
-        return tool_def.name in enabled
+        # Tool definitions carry wire names (``group__leaf``); policy is canonical.
+        return canonical_name(tool_def.name) in enabled
 
     return FilteredToolset(toolset, _keep)
 
@@ -110,9 +113,10 @@ def _toolset_cache_key(
 ) -> tuple[Any, ...]:
     mcp_names = tuple(sorted(mcp_tool_name(i.server, i.name) for i in mcp.enabled_tools()))
     user_key = tuple(sorted(f"{spec.name}:{spec.digest}" for spec in user_tools))
+    # Normalize legacy globs so equivalent configs share one cached toolset.
     return (
-        tuple(settings.tools.eager),
-        tuple(settings.tools.cold),
+        tuple(normalize_pattern(p) for p in settings.tools.eager),
+        tuple(normalize_pattern(p) for p in settings.tools.cold),
         frozenset(exclude),
         mcp_names,
         str(settings.tools.mcp_defer),
@@ -138,13 +142,33 @@ def _cached_toolset(
 
 
 def _user_tool_tier(settings: LatticeSettings, spec: UserToolSpec) -> ToolTier:
-    """User tools default EAGER; ``tools.cold``/``tools.eager`` globs override."""
-    return resolve_tier(
-        spec.name,
-        eager=settings.tools.eager,
-        cold=settings.tools.cold,
-        default=ToolTier.EAGER,
-    )
+    """User tools default EAGER; ``tools.cold``/``tools.eager`` globs override.
+
+    The canonical name is ``user/<name>``; a bare legacy pattern still matches so
+    existing configs keep working.
+    """
+    canonical = f"user/{spec.name}"
+    cold = settings.tools.cold
+    eager = settings.tools.eager
+    if matches(canonical, cold) or matches(spec.name, cold):
+        return ToolTier.COLD
+    if matches(canonical, eager) or matches(spec.name, eager):
+        return ToolTier.EAGER
+    return ToolTier.EAGER
+
+
+def resolve_tool_policy(ctx: Any, canonical: str) -> ToolPolicy:
+    """Gate policy for any tool: core registry, then user tools, then default.
+
+    Called by ``GuardedToolset`` for every call, so built-in, user, and MCP tools
+    all pass through the same precheck/approval path.
+    """
+    policy = CORE_POLICIES.get(canonical)
+    if policy is not None:
+        return policy
+    if canonical.startswith("user/"):
+        return user_tool_policy(ctx, canonical)
+    return DEFAULT_POLICY
 
 
 def build_core_toolset(
@@ -170,10 +194,10 @@ def build_core_toolset(
     def _build() -> AbstractToolset[TurnDeps]:
         from pydantic_ai.toolsets import DeferredLoadingToolset
 
-        # ``build_toolsets`` returns ``[eager, deferred-cold?]``. Keep every
-        # eager toolset ahead of every deferred one so a revealed tool is a pure
-        # suffix of the request's tools array: the cached prefix only grows,
-        # instead of shifting when a cold user/MCP tool interleaves.
+        # ``build_toolsets`` returns every eager group toolset before every
+        # deferred one. Keep that split so an eager user/MCP toolset appended
+        # below still precedes all deferred work: a revealed tool is then a pure
+        # suffix of the request's tools array and the cached prefix only grows.
         built = list(
             build_toolsets(
                 exclude=exclude,
@@ -182,8 +206,12 @@ def build_core_toolset(
                 defer_cold=True,
             )
         )
-        eager: list[AbstractToolset[TurnDeps]] = [built[0]]
-        deferred: list[AbstractToolset[TurnDeps]] = list(built[1:])
+        eager: list[AbstractToolset[TurnDeps]] = [
+            ts for ts in built if not isinstance(ts, DeferredLoadingToolset)
+        ]
+        deferred: list[AbstractToolset[TurnDeps]] = [
+            ts for ts in built if isinstance(ts, DeferredLoadingToolset)
+        ]
 
         if specs:
             eager_specs = [s for s in specs if _user_tool_tier(settings, s) is ToolTier.EAGER]
@@ -203,7 +231,9 @@ def build_core_toolset(
         combined: AbstractToolset[TurnDeps] = (
             CombinedToolset(toolsets) if len(toolsets) > 1 else toolsets[0]
         )
-        return filter_enabled(combined) if filter_policy else combined
+        inner = filter_enabled(combined) if filter_policy else combined
+        # One middleware seam for every tool source: precheck → approval → traced.
+        return GuardedToolset(wrapped=inner, resolve=resolve_tool_policy)
 
     return _cached_toolset(key, _build)
 
@@ -232,7 +262,7 @@ def build_search_description(
         return _BASE_SEARCH_DESCRIPTION
 
     shown = cold_core[:_MANIFEST_MAX_NAMES]
-    listing = ", ".join(shown)
+    listing = ", ".join(wire_name(name) for name in shown)
     if len(cold_core) > _MANIFEST_MAX_NAMES:
         listing = f"{listing} (+{len(cold_core) - _MANIFEST_MAX_NAMES} more)"
 
@@ -333,8 +363,9 @@ def resolve_enabled_tools(
     extra_tools: Sequence[str] = (),
 ) -> list[str]:
     channel_cfg = settings.telegram.tools if channel == "telegram" else settings.tools
+    universe = [*CORE_TOOL_NAMES, *(f"user/{name}" for name in extra_tools)]
     return merge_tool_policy(
-        [*CORE_TOOL_NAMES, *extra_tools],
+        universe,
         profile_allow=profile.tools_allow,
         profile_deny=profile.tools_deny,
         channel_allow=channel_cfg.allow if hasattr(channel_cfg, "allow") else settings.tools.allow,

@@ -237,8 +237,18 @@ tools:
   mcp_defer_threshold: 8
   search_strategy: bm25            # bm25 (default) | keywords
   search_min_ratio: 0.35           # drop BM25 matches under this fraction of the top score; 0 disables
-  eager: []                        # fnmatch globs that force tools eager
-  cold: []                         # fnmatch globs that force tools behind search (wins on conflict)
+  eager: []                        # canonical group/leaf globs that force tools eager
+  cold: []                         # canonical globs that force tools behind search (wins on conflict)
+
+mcp:
+  enabled: true
+  servers:
+    - name: filesystem             # exposed as filesystem__<tool>; may not be a built-in group
+      command: npx                 # stdio transport (exactly one of command | url)
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      env: {}                      # optional environment for the subprocess
+    # - name: remote
+    #   url: https://example.com/mcp
 
 browser:
   channel: auto                    # auto | chrome | chromium (auto prefers system Chrome)
@@ -332,17 +342,27 @@ top.
 
 ### Core tools
 
-| Domain | Tools |
+Built-ins are grouped into MCP-shaped namespaces. **Canonical** names (`group/leaf`) are
+what operator config, HITL, audit, and the ledger use; the **model** sees and calls the wire
+form `group__leaf` (double underscore), because providers reject `/` in function names.
+Legacy flat names (`sqlite_execute`) and `prefix_*` globs (`sqlite_*`) are normalized on load.
+
+| Group | Tools (canonical) |
 |--------|-------|
-| Files & shell | `shell`, `read_file`, `write_file`, `edit_file`, `remove_path`, `search_files` |
-| Media & documents | `ocr`, `generate_pdf`, `generate_chart` |
-| Web & browser | `web_search`, `web_fetch`, `browser_interact`, `browser_snapshot` |
-| Code & compute | `execute_script`, `calculator` |
-| Interaction | `clarify`, `todo` |
-| Scheduling & time | `schedule_add`, `schedule_list`, `schedule_cancel`, `timezone_get`, `timezone_set` |
-| Memory & sessions | `session_search`, `memory_search`, `memory_add`, `memory_update`, `memory_forget` |
-| SQLite | `sqlite_list`, `sqlite_schema`, `sqlite_query`, `sqlite_execute`, `sqlite_register`, `sqlite_unregister`, `sqlite_backup` |
-| Skills & profiles | `skills_list`, `skill_view`, `profile_list`, `profile_remove` |
+| `files` | `files/shell`, `files/read`, `files/write`, `files/edit`, `files/remove`, `files/search` |
+| `media` | `media/ocr`, `media/pdf`, `media/chart` |
+| `web` | `web/search`, `web/fetch` |
+| `browser` | `browser/interact`, `browser/snapshot` |
+| `compute` | `compute/script`, `compute/calculator` |
+| `interaction` | `interaction/clarify`, `interaction/todo` |
+| `schedule` | `schedule/add`, `schedule/list`, `schedule/cancel`, `schedule/timezone_get`, `schedule/timezone_set` |
+| `memory` | `memory/session_search`, `memory/search`, `memory/add`, `memory/update`, `memory/forget` |
+| `sqlite` | `sqlite/list`, `sqlite/schema`, `sqlite/query`, `sqlite/execute`, `sqlite/register`, `sqlite/unregister`, `sqlite/backup` |
+| `skills` | `skills/list`, `skills/view` |
+| `profiles` | `profiles/list`, `profiles/remove` |
+
+The 11 group names are reserved: user tools live under `user/<name>` and external MCP tools
+under `server/tool`, so a server cannot shadow a built-in group.
 
 ### Discovery tools
 
@@ -359,26 +379,39 @@ revert to the legacy token-overlap ranking.
 ### Tiers and policy
 
 - **Eager** tools are always visible; **cold** tools are deferred behind discovery.
-  Configure with `tools.eager` / `tools.cold` fnmatch globs (and built-in defaults).
-- **MCP tools** form a toolset that can be wrapped in deferred loading. `tools.mcp_defer`
-  chooses `always`, `auto`, or `never`; `auto` defers once tools exceed
-  `tools.mcp_defer_threshold` (default `8`).
-- **User tools** are declared in `tools/<name>.yaml` and flow through the same policy and
-  HITL checks.
-- `execute_script` prefers **bubblewrap** (`bwrap`) for sandboxing. Network access is off by
+  Configure with `tools.eager` / `tools.cold` fnmatch globs matched against canonical
+  `group/leaf` names (and built-in defaults).
+- **MCP tools** connect to external servers over stdio (`command`/`args`) or streamable HTTP
+  (`url`) and are exposed as `server/tool` (wire `server__tool`). `tools.mcp_defer` chooses
+  `always`, `auto`, or `never`; `auto` defers once tools exceed `tools.mcp_defer_threshold`
+  (default `8`). A server may not reuse one of the 11 built-in group names, and its tool
+  names are validated against the provider grammar at discovery.
+- **User tools** are declared in `tools/<name>.yaml`, exposed as `user/<name>`, and flow
+  through the same policy and HITL checks.
+- `compute/script` prefers **bubblewrap** (`bwrap`) for sandboxing. Network access is off by
   default, and `scripts.require_bwrap: true` refuses to run without a sandbox (recommended on
   Linux; macOS falls back to a softer sandbox).
+
+### Tool middleware
+
+Every tool call — built-in, user, or external MCP — passes through one
+`GuardedToolset` seam in the same order: **precheck** (tool-specific validation that
+must run before any prompt, e.g. an out-of-jail removal), **approval** (`HITL`, driven
+by a per-tool policy or the built-in `tool_needs_approval` rules), then **`traced`**
+execution (turn events, result truncation, and the repeated-failure breaker). Tool
+bodies stay pure, so policy, audit, the action ledger, live-status, and the media
+snapshot hook behave identically whether a call is internal or over MCP.
 
 ## Skills
 
 Skills are folders with a `SKILL.md` and optional scripts. They use progressive disclosure:
 the agent sees each skill's `name` and `description` in the index, then loads the full body
-with `skill_view` only when relevant.
+with `skills/view` only when relevant.
 
 ```
 .lattice/skills/<name>/
 ├── SKILL.md            # YAML frontmatter: name, description; then instructions
-└── scripts/…           # optional helpers invoked via execute_script
+└── scripts/…           # optional helpers invoked via compute/script
 ```
 
 ```markdown
@@ -397,7 +430,7 @@ Bundled starters include `session-hygiene`, `safe-shell`, `web-research`, `sqlit
 (`scripts/sqlite.py`), `scheduling` (`scripts/schedule.py`), and `profile-authoring`
 (`scripts/profiles.py`, `scripts/profile_remove.py`).
 
-The authoring ladder is: start with a skill, add a script via `execute_script`, and only then
+The authoring ladder is: start with a skill, add a script via `compute/script`, and only then
 graduate to at most one tool manifest. See the `skill-authoring` and `tool-authoring`
 starters.
 
@@ -407,12 +440,12 @@ starters.
   background worker with bounded timeouts and flushed at shutdown.
 - A **boot self-check** (`memory.self_check: true`) round-trips an embedding and fails loudly
   if memory would silently return nothing. Fact extraction on each turn is off by default.
-- **Sessions** persist to `.lattice/state.db`; `session_search` retrieves prior turns, and
+- **Sessions** persist to `.lattice/state.db`; `memory/session_search` retrieves prior turns, and
   the context compressor bounds long histories while protecting the most recent messages.
 
 ## Scheduler & Reminders
 
-- `schedule_add` / `schedule_list` / `schedule_cancel` manage cron or one-shot jobs.
+- `schedule/add` / `schedule/list` / `schedule/cancel` manage cron or one-shot jobs.
 - Reminders are delivered with verbatim phrasing.
 - The gateway polls the scheduler every 30 seconds and delivers to `telegram`, `cli`, or
   `none`. Run `lattice gateway --once` for a single scheduler pass without Telegram.
@@ -424,7 +457,7 @@ starters.
 - Queries run with WAL, tuned `busy_timeout`/`mmap` pragmas, a 500-row limit, and a 5000 ms
   timeout.
 - Destructive DDL is HITL-gated, and Lattice refuses to operate on its own `state.db`.
-- `sqlite_backup` writes backups under `.lattice/sqlite/backups`.
+- `sqlite/backup` writes backups under `.lattice/sqlite/backups`.
 
 ## Observability & Eval
 
@@ -473,7 +506,7 @@ integration tests run when `OPENROUTER_API_KEY` is available.
   system soul instructs the agent never to place secrets in files, scripts, or skills.
 - **Untrusted input:** web and tool output is treated as untrusted data, never as
   instructions.
-- **Sandboxing:** `execute_script` prefers bubblewrap, disables network by default, and can be
+- **Sandboxing:** `compute/script` prefers bubblewrap, disables network by default, and can be
   configured to require a sandbox.
 
 ## Project Layout

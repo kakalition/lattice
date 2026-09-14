@@ -27,7 +27,7 @@ def test_actions_pair_calls_with_returns() -> None:
     messages = _pair("read_file", {"path": "finance.py"}, "print('hi')")
     actions = actions_from_messages(messages)
     assert len(actions) == 1
-    assert actions[0].tool == "read_file"
+    assert actions[0].tool == "files/read"
     assert actions[0].target == "finance.py"
     assert actions[0].ok is True
 
@@ -93,7 +93,7 @@ def test_build_action_notice_renders_lines() -> None:
             ActionRecord(tool="shell", target="ls", ok=False),
         ]
     )
-    assert "read_file finance.py" in notice
+    assert "files/read finance.py" in notice
     assert "failed" in notice
     assert build_action_notice([]) == ""
 
@@ -104,7 +104,7 @@ def test_synthesize_actions_from_tool_trace() -> None:
         ToolRecord(name="write_file", duration_ms=1, ok=False, result_bytes=1, truncated=False),
     ]
     actions = actions_from_tool_trace(tools, media=[Path("out.png")])
-    assert [a.tool for a in actions] == ["shell", "write_file"]
+    assert [a.tool for a in actions] == ["files/shell", "files/write"]
     assert actions[0].ok is True
     assert actions[1].ok is False
     assert "out.png" in actions[-1].artifacts
@@ -140,7 +140,7 @@ async def test_tools_then_provider_error_persists_ledger(tmp_path: Path) -> None
                 return ModelResponse(
                     parts=[
                         ToolCallPart(
-                            tool_name="calculator",
+                            tool_name="compute__calculator",
                             args={"expression": "2+3"},
                             tool_call_id="call-1",
                         )
@@ -163,7 +163,7 @@ async def test_tools_then_provider_error_persists_ledger(tmp_path: Path) -> None
     )
     saved = await store.get(out.session_id or "")
     assert saved is not None
-    assert [a["tool"] for a in saved["actions"]] == ["calculator"]
+    assert [a["tool"] for a in saved["actions"]] == ["compute/calculator"]
 
 
 @pytest.mark.asyncio
@@ -185,9 +185,9 @@ async def test_run_turn_persists_actions(tmp_path: Path) -> None:
         Inbound(text="calculate", profile_id="default", channel="cli", user_id="u"),
         settings=settings,
         session_store=store,
-        model=TestModel(call_tools=["calculator"], custom_output_text="done"),
+        model=TestModel(call_tools=["compute__calculator"], custom_output_text="done"),
         memory=InMemoryMemory("t"),
     )
     saved = await store.get(out.session_id or "")
     assert saved is not None
-    assert any(a["tool"] == "calculator" for a in saved["actions"])
+    assert any(a["tool"] == "compute/calculator" for a in saved["actions"])

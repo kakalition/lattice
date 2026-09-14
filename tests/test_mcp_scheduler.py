@@ -30,9 +30,7 @@ def test_mcp_defer_decision() -> None:
     assert not should_defer_mcp(
         mgr, ToolsConfig(mcp_defer=McpDeferMode.NEVER, mcp_defer_threshold=8)
     )
-    assert should_defer_mcp(
-        mgr, ToolsConfig(mcp_defer=McpDeferMode.ALWAYS, mcp_defer_threshold=99)
-    )
+    assert should_defer_mcp(mgr, ToolsConfig(mcp_defer=McpDeferMode.ALWAYS, mcp_defer_threshold=99))
 
 
 def test_mcp_toolset_surfaces_discovered_tools() -> None:
@@ -53,8 +51,8 @@ def test_mcp_toolset_surfaces_discovered_tools() -> None:
     )
     mcp_toolset = McpToolset(mgr)
     tools = asyncio.run(mcp_toolset.get_tools(_Ctx()))
-    assert "s/t3" in tools
-    assert tools["s/t3"].tool_def.description == "tool 3"
+    assert "s__t3" in tools
+    assert tools["s__t3"].tool_def.description == "tool 3"
 
     # Native deferral marks the MCP tools hidden until tool search reveals them.
     deferred = DeferredLoadingToolset(mcp_toolset)
@@ -82,15 +80,16 @@ def test_mcp_toolset_sorts_tools_by_name() -> None:
         ]
     )
     tools = asyncio.run(McpToolset(mgr).get_tools(_Ctx()))
-    assert list(tools) == ["a/a", "a/m", "b/z"]
+    assert list(tools) == ["a__a", "a__m", "b__z"]
 
 
-def test_mcp_call_reports_not_connected() -> None:
+@pytest.mark.asyncio
+async def test_mcp_call_unknown_tool() -> None:
     mgr = McpHostManager()
     mgr.register_discovered([McpToolInfo(server="s", name="t3", description="tool 3")])
-    out = mgr.call("s/t3", {"x": 1})
-    assert "stub" in out.lower()
-    assert "unknown mcp tool" in mgr.call("nope")
+    out = await mgr.call_tool("s/t3", {"x": 1})
+    assert "not configured" in out
+    assert "unknown mcp tool" in await mgr.call_tool("nope")
 
 
 def test_scheduler_jobs_roundtrip(tmp_path: Path) -> None:

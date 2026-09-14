@@ -20,11 +20,11 @@ from lattice.tools.script import (
 
 
 def test_core_tools_include_execute_script() -> None:
-    assert "execute_script" in CORE_TOOL_NAMES
+    assert "compute/script" in CORE_TOOL_NAMES
 
 
 def test_build_toolsets_includes_new_tools() -> None:
-    from lattice.tools.agent import tool_functions
+    from lattice.tools.groups import tool_functions
 
     mapping = tool_functions()
     assert set(CORE_TOOL_NAMES) <= set(mapping)

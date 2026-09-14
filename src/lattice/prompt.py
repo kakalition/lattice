@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from lattice.tool_names import normalize_name
+
 
 class PromptBundle(BaseModel):
     identity: str
@@ -71,7 +73,7 @@ def build_runtime_context(
         lines.append(f"Canonical finance DB: {canonical}")
     lines.append(
         "Rules: the shell cwd is already the workspace — do not `cd`; never run `find /` "
-        "or scan `~`; use search_files/read_file to locate files and sqlite_schema to "
+        "or scan `~`; use files__search/files__read to locate files and sqlite__schema to "
         "inspect databases; register an existing workspace DB by its relative path."
     )
     return "\n".join(lines)
@@ -94,12 +96,12 @@ def build_action_notice(actions: list[Any], *, limit: int = 15) -> str:
     lines = ["Recent actions:"]
     for action in actions[-limit:]:
         if isinstance(action, dict):
-            tool = str(action.get("tool") or "?")
+            tool = normalize_name(str(action.get("tool") or "?"))
             target = str(action.get("target") or "")
             ok = bool(action.get("ok", True))
             artifacts = action.get("artifacts") or []
         else:
-            tool = str(getattr(action, "tool", "?"))
+            tool = normalize_name(str(getattr(action, "tool", "?")))
             target = str(getattr(action, "target", "") or "")
             ok = bool(getattr(action, "ok", True))
             artifacts = getattr(action, "artifacts", []) or []
@@ -147,5 +149,5 @@ def build_skill_index_xml(entries: list[tuple[str, str]]) -> str:
     for name, desc in sorted(entries, key=lambda x: x[0]):
         lines.append(f'  <skill name="{name}">{desc}</skill>')
     lines.append("</available_skills>")
-    lines.append("Use skill_view(name) to load a full skill body when needed.")
+    lines.append("Use skills__view(name) to load a full skill body when needed.")
     return "\n".join(lines)

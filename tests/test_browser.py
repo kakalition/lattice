@@ -9,7 +9,6 @@ import pytest
 
 from lattice.config import BrowserChannel, BrowserConfig
 from lattice.deps import CORE_TOOL_NAMES
-from lattice.tools.agent import tool_functions
 from lattice.tools.browser import (
     BROWSER_ACTIONS,
     _validate_url,
@@ -22,6 +21,7 @@ from lattice.tools.browser import (
     profile_dir_for,
     reset_driver,
 )
+from lattice.tools.groups import tool_functions
 
 
 def test_context_options_look_human() -> None:
@@ -67,16 +67,15 @@ def test_browser_config_in_settings() -> None:
 
 
 def test_core_tools_include_browser() -> None:
-    assert "browser_interact" in CORE_TOOL_NAMES
-    assert "browser_snapshot" in CORE_TOOL_NAMES
+    assert "browser/interact" in CORE_TOOL_NAMES
+    assert "browser/snapshot" in CORE_TOOL_NAMES
 
 
 def test_build_toolsets_includes_browser_tools() -> None:
-    from lattice.tools.agent import tool_functions
 
     mapping = tool_functions()
-    assert "browser_interact" in mapping
-    assert "browser_snapshot" in mapping
+    assert "browser/interact" in mapping
+    assert "browser/snapshot" in mapping
     assert set(CORE_TOOL_NAMES) <= set(mapping)
 
 

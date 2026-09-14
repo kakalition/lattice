@@ -12,9 +12,7 @@ from lattice.tools.web import fence_untrusted
 _engine: Any | None = None
 _engine_error: str | None = None
 
-IMAGE_SUFFIXES = frozenset(
-    {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
-)
+IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"})
 
 
 def _get_engine() -> Any:

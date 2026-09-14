@@ -25,7 +25,7 @@ from lattice.memory import InMemoryMemory
 from lattice.models import Inbound
 from lattice.session import SessionStore
 from lattice.setup import init_home
-from lattice.tools.agent import default_eager_names
+from lattice.tools.groups import default_eager_names
 from lattice.turn import run_turn
 from lattice.turn_record import ToolRecord
 from lattice.turn_trace import LoggingTurnEvents
@@ -169,7 +169,7 @@ async def test_todo_round_trip_across_turns(tmp_path: Path) -> None:
         session_store=store,
         model=_ScriptedModel(
             [
-                _call("todo", {"action": "add", "text": "alpha"}, "t1"),
+                _call("interaction__todo", {"action": "add", "text": "alpha"}, "t1"),
                 _text("ok"),
             ]
         ),
@@ -193,7 +193,7 @@ async def test_todo_round_trip_across_turns(tmp_path: Path) -> None:
         session_store=store,
         model=_ScriptedModel(
             [
-                _call("todo", {"action": "add", "text": "beta"}, "t2"),
+                _call("interaction__todo", {"action": "add", "text": "beta"}, "t2"),
                 _text("ok"),
             ]
         ),
@@ -277,12 +277,12 @@ async def test_todo_survives_compression(tmp_path: Path, monkeypatch: pytest.Mon
 @pytest.mark.asyncio
 async def test_abort_trace_preserves_tool_operands() -> None:
     trace = LoggingTurnEvents("trace1")
-    await trace.on_tool_start("write_file", {"path": "out.txt", "content": "x"})
-    await trace.on_tool_end("write_file", "wrote out.txt")
+    await trace.on_tool_start("files/write", {"path": "out.txt", "content": "x"})
+    await trace.on_tool_end("files/write", "wrote out.txt")
     assert trace.tools[0].args.get("path") == "out.txt"
 
     records = actions_from_tool_trace(trace.tools)
-    assert records[0].tool == "write_file"
+    assert records[0].tool == "files/write"
     assert records[0].target == "out.txt"
     assert "out.txt" in records[0].artifacts
 
@@ -291,7 +291,8 @@ def test_actions_from_tool_trace_keeps_legacy_shape() -> None:
     # ToolRecords persisted/constructed without args must still produce records.
     tools = [ToolRecord(name="shell", duration_ms=1, ok=True, result_bytes=1, truncated=False)]
     records = actions_from_tool_trace(tools)
-    assert records[0].tool == "shell"
+    # Legacy flat names normalize to canonical when read back.
+    assert records[0].tool == "files/shell"
     assert records[0].target == ""
 
 
@@ -301,7 +302,7 @@ async def test_context_overflow_after_tools_does_not_replay(tmp_path: Path) -> N
     store = SessionStore(tmp_path / "state.db")
     model = _ScriptedModel(
         [
-            _call("calculator", {"expression": "2+3"}, "c1"),
+            _call("compute__calculator", {"expression": "2+3"}, "c1"),
             RuntimeError("maximum context length exceeded"),
         ]
     )
@@ -355,6 +356,6 @@ async def test_replay_evidence_gate_default_on_and_opt_out(tmp_path: Path) -> No
 
 def test_eager_set_includes_harness_named_tools() -> None:
     eager = set(default_eager_names())
-    for name in ("schedule_add", "skills_list", "skill_view", "sqlite_schema", "ocr"):
+    for name in ("schedule/add", "skills/list", "skills/view", "sqlite/schema", "media/ocr"):
         assert name in eager
     assert len(default_eager_names()) == len(eager)

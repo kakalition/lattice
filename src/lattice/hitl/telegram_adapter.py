@@ -76,11 +76,7 @@ class TelegramHitlAdapter:
         fut: asyncio.Future[str] = loop.create_future()
         self._pending[token] = fut
         if self._send_fn:
-            body = (
-                f"Approve `{req.tool_name}`?\n{req.summary}\n\n"
-                "A — Approve\n"
-                "B — Deny"
-            )
+            body = f"Approve `{req.tool_name}`?\n{req.summary}\n\nA — Approve\nB — Deny"
             await self._send_fn(
                 text=body,
                 buttons=[

@@ -16,6 +16,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from lattice.tool_names import normalize_name
+
 logger = logging.getLogger("lattice.eval.corpus")
 
 _LOG_LINE_RE = re.compile(r"turn=([0-9a-fA-F]+) (.*)")
@@ -139,7 +141,9 @@ def mine_shell_commands(audit_path: Path) -> list[str]:
             record = json.loads(raw)
         except ValueError:
             continue
-        if record.get("event") == "tool" and record.get("name") == "shell":
+        if record.get("event") == "tool" and normalize_name(str(record.get("name") or "")) == (
+            "files/shell"
+        ):
             command = record.get("command")
             if isinstance(command, str) and command.strip():
                 commands.append(command)

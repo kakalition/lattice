@@ -89,15 +89,15 @@ _MEDIA_MTIME_SLACK = 1.0
 # are skipped entirely (two full workspace walks saved).
 _MEDIA_TOOLS = frozenset(
     {
-        "shell",
-        "execute_script",
-        "write_file",
-        "edit_file",
-        "generate_chart",
-        "generate_pdf",
-        "browser_interact",
-        "browser_snapshot",
-        "remove_path",
+        "files/shell",
+        "compute/script",
+        "files/write",
+        "files/edit",
+        "media/chart",
+        "media/pdf",
+        "browser/interact",
+        "browser/snapshot",
+        "files/remove",
     }
 )
 
@@ -207,11 +207,18 @@ async def run_turn(
     events = trace
     hitl = hitl or AutoApproveHitl(approve_all=False)
     store = session_store or SessionStore(settings.home / "state.db")
-    mcp = mcp or McpHostManager()
+    auto_mcp = mcp is None
+    mcp = mcp or McpHostManager.from_settings(settings)
     profile = get_profile(inbound.profile_id, settings.home)
 
     if inbound.cancel:
         raise TurnCancelled("cancel requested")
+
+    # Discover external MCP tools before the toolset is built. Best-effort: an
+    # unreachable server contributes a notice, never a failed turn.
+    if auto_mcp and mcp.configured_servers():
+        with trace.timed("mcp_discover"):
+            await mcp.discover()
 
     session_id = inbound.session_id
     if not session_id:
@@ -248,6 +255,8 @@ async def run_turn(
     summarizer_id = settings.agent.summarizer_model or primary_id
 
     notices: list[str] = []
+    for err in mcp.errors:
+        notices.append(f"[notice] {err}")
     memory = memory or build_memory_for_profile(settings, profile, model_id=primary_id)
 
     async def _recall() -> list[dict[str, Any]]:
@@ -695,6 +704,9 @@ async def run_turn(
             )
         context_record.after_messages = len(messages)
         await pool.close_all()
+        if auto_mcp:
+            with contextlib.suppress(Exception):
+                await mcp.close()
         actions = actions_from_messages(run_messages, media=list(deps.outbound_media))
         if not actions and trace.tools:
             # The run never returned a message list (timeout/cancel/budget/provider

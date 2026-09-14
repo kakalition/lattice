@@ -98,10 +98,10 @@ def test_validate_removal_rejects_nonempty_dir_without_recursive(tmp_path: Path)
 
 def test_out_of_jail_remove_path_never_prompts(tmp_path: Path) -> None:
     hitl = RecordingHitl(ApprovalDecision.APPROVE)
-    deps = _deps(tmp_path, hitl, ["remove_path"])
+    deps = _deps(tmp_path, hitl, ["files/remove"])
     outside = str(tmp_path.parent / "escape.txt")
 
-    returns = _invoke_tool(deps, "remove_path", {"path": outside})
+    returns = _invoke_tool(deps, "files__remove", {"path": outside})
 
     assert hitl.calls == [], "out-of-jail removal must not trigger HITL"
     assert returns and "outside" in str(returns[0].content)
@@ -109,24 +109,24 @@ def test_out_of_jail_remove_path_never_prompts(tmp_path: Path) -> None:
 
 def test_in_jail_remove_path_still_prompts(tmp_path: Path) -> None:
     hitl = RecordingHitl(ApprovalDecision.DENY)
-    deps = _deps(tmp_path, hitl, ["remove_path"])
+    deps = _deps(tmp_path, hitl, ["files/remove"])
     (tmp_path / "a.txt").write_text("x")
 
-    returns = _invoke_tool(deps, "remove_path", {"path": "a.txt"})
+    returns = _invoke_tool(deps, "files__remove", {"path": "a.txt"})
 
-    assert hitl.calls == ["remove_path"]
+    assert hitl.calls == ["files/remove"]
     assert returns and "denied" in str(returns[0].content)
 
 
 def test_invalid_profile_remove_never_prompts(tmp_path: Path) -> None:
     ensure_default_profile(tmp_path)
     hitl = RecordingHitl(ApprovalDecision.APPROVE)
-    deps = _deps(tmp_path, hitl, ["profile_remove"])
+    deps = _deps(tmp_path, hitl, ["profiles/remove"])
     # profile_remove is cold/deferred by default; force it eager so the model can
     # call it directly and we exercise the tool body.
-    deps.settings.tools.eager = ["profile_remove"]
+    deps.settings.tools.eager = ["profiles/remove"]
 
-    returns = _invoke_tool(deps, "profile_remove", {"profile_id": "default"})
+    returns = _invoke_tool(deps, "profiles__remove", {"profile_id": "default"})
 
     assert hitl.calls == []
     assert returns and "default" in str(returns[0].content)

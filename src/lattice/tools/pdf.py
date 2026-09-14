@@ -54,7 +54,11 @@ def _parse_blocks(content: str) -> list[dict[str, Any]]:
             i += 1
             continue
         para: list[str] = []
-        while i < len(lines) and lines[i].strip() and not lines[i].startswith(("# ", "## ", "- ", "* ")):
+        while (
+            i < len(lines)
+            and lines[i].strip()
+            and not lines[i].startswith(("# ", "## ", "- ", "* "))
+        ):
             para.append(lines[i].strip())
             i += 1
         blocks.append({"type": "p", "text": " ".join(para)})
@@ -81,7 +85,6 @@ def _build_pdf(
     from reportlab.lib.units import mm
     from reportlab.platypus import (
         HRFlowable,
-        Image as RLImage,
         KeepTogether,
         ListFlowable,
         ListItem,
@@ -90,6 +93,9 @@ def _build_pdf(
         Spacer,
         Table,
         TableStyle,
+    )
+    from reportlab.platypus import (
+        Image as RLImage,
     )
 
     fg = colors.Color(*[c / 255 for c in hex_to_rgb255(LIGHT.foreground)])
@@ -226,7 +232,9 @@ def _build_pdf(
             if isinstance(items, list) and items:
                 flow = ListFlowable(
                     [
-                        ListItem(Paragraph(_esc(str(it)), bullet_style), leftIndent=8, bulletColor=accent)
+                        ListItem(
+                            Paragraph(_esc(str(it)), bullet_style), leftIndent=8, bulletColor=accent
+                        )
                         for it in items
                     ],
                     bulletType="bullet",
@@ -253,7 +261,9 @@ def _build_pdf(
                     col_w = doc.width / cols
                     tbl = Table(data, colWidths=[col_w] * cols, hAlign="LEFT")
                     style_cmds = [
-                        ("BACKGROUND", (0, 0), (-1, 0), muted_bg) if headers else ("BACKGROUND", (0, 0), (-1, 0), colors.white),
+                        ("BACKGROUND", (0, 0), (-1, 0), muted_bg)
+                        if headers
+                        else ("BACKGROUND", (0, 0), (-1, 0), colors.white),
                         ("TEXTCOLOR", (0, 0), (-1, -1), fg),
                         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                         ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -333,10 +343,7 @@ def _build_pdf(
 
 def _esc(text: str) -> str:
     return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\n", "<br/>")
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
     )
 
 

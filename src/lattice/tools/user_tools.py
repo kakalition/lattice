@@ -19,13 +19,17 @@ from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_core import SchemaValidator, core_schema
 
-from lattice.deps import CORE_TOOL_NAMES, TurnDeps, maybe_approve, traced, truncate_result
+from lattice.deps import TurnDeps
 from lattice.hitl.policies import script_needs_approval
 from lattice.paths import lattice_home
+from lattice.tool_names import RESERVED_LEAVES
 from lattice.tools.file_safety import resolve_agent_path
+from lattice.tools.middleware import ToolPolicy
 from lattice.tools.script import LANG_EXTS, execute_script, format_script_result
 
 TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_USER_WIRE_PREFIX = "user__"
+_USER_CANONICAL_PREFIX = "user/"
 DEFAULT_PARAMETERS: dict[str, Any] = {"type": "object", "properties": {}}
 
 # Manifests advertise a JSON schema but are not fully validated (no jsonschema
@@ -124,7 +128,7 @@ def scan_user_tools(home: Path | None = None) -> UserTools:
         if not TOOL_NAME_RE.match(name):
             errors.append(f"{stem}: invalid tool name {name!r} (use ^[a-z][a-z0-9_]*$)")
             continue
-        if name in CORE_TOOL_NAMES:
+        if name in RESERVED_LEAVES:
             errors.append(f"{stem}: reserved core tool name")
             continue
         if name in seen:
@@ -199,12 +203,14 @@ class UserToolset(AbstractToolset[TurnDeps]):
     async def get_tools(self, ctx: Any) -> dict[str, ToolsetTool[TurnDeps]]:
         out: dict[str, ToolsetTool[TurnDeps]] = {}
         # Sort by stable name so user tool schemas are byte-identical across
-        # discovery orders, preserving provider-side cache prefixes.
+        # discovery orders, preserving provider-side cache prefixes. The model
+        # sees the ``user__<name>`` wire name; policy/tracing stay ``user/<name>``.
         for spec in sorted(self.specs, key=lambda s: s.name):
-            out[spec.name] = ToolsetTool(
+            wire = f"{_USER_WIRE_PREFIX}{spec.name}"
+            out[wire] = ToolsetTool(
                 toolset=self,
                 tool_def=ToolDefinition(
-                    name=spec.name,
+                    name=wire,
                     description=spec.description,
                     parameters_json_schema=spec.parameters or dict(DEFAULT_PARAMETERS),
                 ),
@@ -216,60 +222,67 @@ class UserToolset(AbstractToolset[TurnDeps]):
     async def call_tool(
         self, name: str, tool_args: dict[str, Any], ctx: Any, tool: ToolsetTool[TurnDeps]
     ) -> Any:
-        spec = self._by_name.get(name)
+        """Run the handler only; precheck/approval/trace come from ``GuardedToolset``."""
+        leaf = name.removeprefix(_USER_WIRE_PREFIX)
+        spec = self._by_name.get(leaf)
         if spec is None:
             return f"error: unknown user tool: {name}"
-        problem = validate_args(spec.parameters or DEFAULT_PARAMETERS, tool_args)
-        if problem:
-            return f"error: {name}: {problem}"
+        canonical = f"{_USER_CANONICAL_PREFIX}{leaf}"
         try:
             body = _handler_body(spec, ctx)
         except Exception as exc:
-            return f"error: {name}: handler error: {exc}"
-
-        summary = spec.handler.path or f"inline {spec.language}"
-        denied = await maybe_approve(
-            ctx,
-            name,
-            summary,
-            needs=script_needs_approval(body, language=spec.language),
-            language=spec.language,
-            path=spec.handler.path,
-            code=body,
-        )
-        if denied:
-            return denied
+            return f"error: {canonical}: handler error: {exc}"
 
         args_json = json.dumps(tool_args, default=str)
+        try:
+            run: dict[str, Any] = {"language": spec.language}
+            if (spec.handler.code or "").strip():
+                run["code"] = body
+            else:
+                # Run a path handler by its real path, not inlined: __file__
+                # and __name__ point at the skill script and sibling imports
+                # work, so handlers need no path-walking hacks.
+                run["path"] = spec.handler.path
+            result = await execute_script(
+                timeout=spec.timeout_seconds or 60.0,
+                workspace=ctx.deps.workspace,
+                home=ctx.deps.settings.home,
+                cfg=ctx.deps.settings.scripts,
+                stdin=args_json,
+                env_extra={
+                    "LATTICE_TOOL_ARGS": args_json,
+                    "LATTICE_TOOL_NAME": spec.name,
+                    "LATTICE_TOOL_LANGUAGE": spec.language,
+                },
+                **run,
+            )
+            return format_script_result(result)
+        except Exception as exc:
+            return f"error: {canonical}: {exc}"
 
-        async def _op() -> str:
-            try:
-                run: dict[str, Any] = {"language": spec.language}
-                if (spec.handler.code or "").strip():
-                    run["code"] = body
-                else:
-                    # Run a path handler by its real path, not inlined: __file__
-                    # and __name__ point at the skill script and sibling imports
-                    # work, so handlers need no path-walking hacks.
-                    run["path"] = spec.handler.path
-                result = await execute_script(
-                    timeout=spec.timeout_seconds or 60.0,
-                    workspace=ctx.deps.workspace,
-                    home=ctx.deps.settings.home,
-                    cfg=ctx.deps.settings.scripts,
-                    stdin=args_json,
-                    env_extra={
-                        "LATTICE_TOOL_ARGS": args_json,
-                        "LATTICE_TOOL_NAME": spec.name,
-                        "LATTICE_TOOL_LANGUAGE": spec.language,
-                    },
-                    **run,
-                )
-                return truncate_result(format_script_result(result))
-            except Exception as exc:
-                return f"error: {name}: {exc}"
 
-        return await traced(ctx, name, dict(tool_args), _op)
+def user_tool_policy(ctx: Any, canonical: str) -> ToolPolicy:
+    """Policy for one user tool: arg validation, script HITL, and approval summary."""
+    leaf = canonical.split("/", 1)[1] if "/" in canonical else canonical
+    spec = next((s for s in getattr(ctx.deps, "user_tools", []) if s.name == leaf), None)
+    if spec is None:
+        return ToolPolicy()
+
+    def precheck(_ctx: Any, args: dict[str, Any]) -> str | None:
+        problem = validate_args(spec.parameters or DEFAULT_PARAMETERS, args)
+        return f"error: {canonical}: {problem}" if problem else None
+
+    def needs(_ctx: Any, args: dict[str, Any]) -> bool:
+        try:
+            body = _handler_body(spec, ctx)
+        except Exception:
+            return True
+        return script_needs_approval(body, language=spec.language)
+
+    def summary(_ctx: Any, args: dict[str, Any]) -> str:
+        return spec.handler.path or f"inline {spec.language}"
+
+    return ToolPolicy(precheck=precheck, needs=needs, summary=summary)
 
 
 __all__ = [
@@ -279,5 +292,6 @@ __all__ = [
     "UserToolset",
     "UserTools",
     "scan_user_tools",
+    "user_tool_policy",
     "validate_args",
 ]

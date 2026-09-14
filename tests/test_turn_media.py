@@ -121,7 +121,7 @@ async def test_media_tool_turn_snapshots_once(
         Inbound(text="write a note", profile_id="default", channel="cli", user_id="u"),
         settings=settings,
         session_store=SessionStore(tmp_path / "state.db"),
-        model=TestModel(call_tools=["write_file"], custom_output_text="done"),
+        model=TestModel(call_tools=["files__write"], custom_output_text="done"),
         memory=InMemoryMemory("t"),
     )
     assert calls["snapshot"] == 1

@@ -25,7 +25,7 @@ from lattice.session import SessionStore
 from lattice.setup import write_skill_starters
 from lattice.sqlite import SqlitePool, SqliteRegistry
 from lattice.tools import read_cache
-from lattice.tools.agent import default_eager_names, tool_functions
+from lattice.tools.groups import default_eager_names, tool_functions
 
 
 @pytest.fixture(autouse=True)
@@ -149,21 +149,21 @@ async def test_read_file_elides_unchanged_body(tmp_path: Path) -> None:
     tools = tool_functions()
     ctx = SimpleNamespace(deps=deps)
 
-    first = await tools["read_file"](ctx, "a.txt")
-    second = await tools["read_file"](ctx, "a.txt")
+    first = await tools["files/read"](ctx, "a.txt")
+    second = await tools["files/read"](ctx, "a.txt")
     assert first == "hello"
     assert "unchanged since last read" in second
 
     target.write_text("hello world", encoding="utf-8")
-    third = await tools["read_file"](ctx, "a.txt")
+    third = await tools["files/read"](ctx, "a.txt")
     assert third == "hello world"
 
     # A new turn on the same session must re-serve the body: tool results are
     # not replayed, so the model has not seen this file this turn.
     deps.turn_id = "turn-2"
-    fourth = await tools["read_file"](ctx, "a.txt")
+    fourth = await tools["files/read"](ctx, "a.txt")
     assert fourth == "hello world"
-    fifth = await tools["read_file"](ctx, "a.txt")
+    fifth = await tools["files/read"](ctx, "a.txt")
     assert "unchanged since last read" in fifth
 
 

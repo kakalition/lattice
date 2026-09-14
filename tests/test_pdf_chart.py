@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
 import pytest
 
 from lattice.deps import CORE_TOOL_NAMES
-from lattice.tools.agent import tool_functions
 from lattice.tools.chart import generate_chart
+from lattice.tools.groups import tool_functions
 from lattice.tools.pdf import generate_pdf
 from lattice.tools.theme import LIGHT, oklch_to_hex
 
@@ -98,14 +97,13 @@ async def test_generate_chart_bar_and_donut(tmp_path: Path) -> None:
 
 
 def test_core_tools_include_pdf_chart() -> None:
-    assert "generate_pdf" in CORE_TOOL_NAMES
-    assert "generate_chart" in CORE_TOOL_NAMES
+    assert "media/pdf" in CORE_TOOL_NAMES
+    assert "media/chart" in CORE_TOOL_NAMES
 
 
 def test_build_toolsets_includes_new_tools() -> None:
-    from lattice.tools.agent import tool_functions
 
     mapping = tool_functions()
-    assert "generate_pdf" in mapping
-    assert "generate_chart" in mapping
+    assert "media/pdf" in mapping
+    assert "media/chart" in mapping
     assert set(CORE_TOOL_NAMES) <= set(mapping)

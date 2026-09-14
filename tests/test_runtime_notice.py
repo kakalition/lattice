@@ -19,7 +19,7 @@ def test_runtime_context_contains_workspace_dbs_and_rules() -> None:
     assert "/home/u/ws" in context
     assert "Asia/Jakarta" in context
     assert "finance -> /home/u/ws/finance.db" in context
-    assert "sqlite_schema" in context
+    assert "sqlite__schema" in context
     assert "find /" in context
     assert len(context.splitlines()) <= 10
 
@@ -57,5 +57,5 @@ def test_action_notice_is_volatile_not_cached_prefix() -> None:
 
     notice = build_action_notice([ActionRecord(tool="read_file", target="finance.py")])
     prompt = build_prompt_bundle(Profile(id="default"), [], [notice])
-    assert "read_file finance.py" in prompt.user_volatile_preamble()
-    assert "read_file finance.py" not in prompt.stable_system_prompt()
+    assert "files/read finance.py" in prompt.user_volatile_preamble()
+    assert "files/read finance.py" not in prompt.stable_system_prompt()

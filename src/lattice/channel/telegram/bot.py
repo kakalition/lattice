@@ -198,8 +198,8 @@ class TelegramBot:
                 return
             caption = f"{brand_label()} ready. Send a message or /profile."
             try:
-                with open(logo_path(), "rb") as fh:
-                    await update.message.reply_photo(photo=fh, caption=caption)
+                photo = await asyncio.to_thread(logo_path().read_bytes)
+                await update.message.reply_photo(photo=photo, caption=caption)
             except Exception:
                 await _reply(update, caption)
 

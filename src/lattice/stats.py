@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from lattice.tool_names import normalize_name
 from lattice.turn_record import turn_records_path
 
 
@@ -91,7 +92,9 @@ def compute_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         if context.get("compressed"):
             compressions += 1
         for tool in record.get("tools") or []:
-            name = str(tool.get("name") or "?")
+            # Historical records hold flat pre-group names; normalize so old and
+            # new turns aggregate under the same canonical name.
+            name = normalize_name(str(tool.get("name") or "?"))
             tool_calls += 1
             duration = int(tool.get("duration_ms") or 0)
             expensive[name] = expensive.get(name, 0) + duration

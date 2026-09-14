@@ -130,7 +130,7 @@ class LoggingTurnEvents:
                 await self.on_tool_start_hook(name)
         self.tool_calls += 1
         self._tool_starts.setdefault(name, []).append((time.monotonic(), _clip_args(args)))
-        if name == "skill_view":
+        if name == "skills/view":
             skill = str(args.get("name") or args.get("skill") or "")
             if skill:
                 self.skills_used.append(skill)

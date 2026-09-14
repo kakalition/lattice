@@ -41,7 +41,7 @@ def test_ocr_format_and_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_merge_tool_policy_deny_wins() -> None:
-    names = ["shell", "read_file", "sqlite_query", "write_file"]
+    names = ["files/shell", "files/read", "sqlite/query", "files/write"]
     got = merge_tool_policy(
         names,
         profile_allow=["sqlite_*", "read_file", "web_*"],
@@ -49,7 +49,7 @@ def test_merge_tool_policy_deny_wins() -> None:
         channel_allow=["*"],
         channel_deny=[],
     )
-    assert got == ["read_file", "sqlite_query"]
+    assert got == ["files/read", "sqlite/query"]
 
 
 def test_path_deny(tmp_path: Path) -> None:
@@ -234,12 +234,12 @@ def test_init_and_skills(tmp_path: Path) -> None:
     )
     assert entries[0][0] == "telegram-chat"
     body = skill_view("sqlite-admin", skills)
-    assert "sqlite_backup" in body
+    assert "sqlite__backup" in body
     cited = skill_view("cited-research", skills)
     assert "Sources:" in cited
     tg = skill_view("telegram-chat", skills)
     assert "table" in tg.lower()
-    assert "write_file" in skill_view("skill-authoring", skills)
+    assert "files__write" in skill_view("skill-authoring", skills)
     assert "SOUL.md" in skill_view("profile-authoring", skills)
     assert "profile_remove" in skill_view("profile-authoring", skills)
     profile = load_profile("default", root)
@@ -510,7 +510,7 @@ def test_skill_view_rescans_same_turn(tmp_path: Path) -> None:
     from pydantic_ai.toolsets import FunctionToolset
 
     from lattice.events import NullTurnEvents
-    from lattice.tools.agent.skill_view import register
+    from lattice.tools.groups.skills import register_view as register
 
     root = init_home(tmp_path)
     write_skill_starters(root)
@@ -521,7 +521,7 @@ def test_skill_view_rescans_same_turn(tmp_path: Path) -> None:
         events=NullTurnEvents(),
     )
     ctx = SimpleNamespace(deps=deps)
-    fn = register(FunctionToolset())["skill_view"]
+    fn = register(FunctionToolset())["view"]
 
     assert "skill not found" in asyncio.run(fn(ctx, "temp-note"))
     skill_dir = root / "skills" / "temp-note"

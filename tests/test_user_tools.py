@@ -14,6 +14,7 @@ from lattice.agent_app import (
     _toolset_cache_key,
     build_core_toolset,
     resolve_enabled_tools,
+    resolve_tool_policy,
 )
 from lattice.config import LatticeSettings, ToolsConfig
 from lattice.deps import TurnDeps
@@ -24,13 +25,20 @@ from lattice.memory import InMemoryMemory
 from lattice.profiles.load import Profile
 from lattice.session import SessionStore
 from lattice.sqlite import SqlitePool, SqliteRegistry
+from lattice.tools.middleware import GuardedToolset
 from lattice.tools.user_tools import (
     ToolHandler,
-    UserToolSpec,
     UserToolset,
+    UserToolSpec,
     scan_user_tools,
     validate_args,
 )
+
+
+def _guarded(toolset: UserToolset) -> GuardedToolset:
+    """Wrap a bare user toolset with the same middleware the agent uses."""
+    return GuardedToolset(wrapped=toolset, resolve=resolve_tool_policy)
+
 
 BENIGN = (
     "import json, os, sys\n"
@@ -159,7 +167,7 @@ def test_resolve_enabled_tools_includes_user_tools(tmp_path: Path) -> None:
     enabled = resolve_enabled_tools(
         settings, profile, channel="cli", mcp=McpHostManager(), extra_tools=["greet"]
     )
-    assert "greet" in enabled
+    assert "user/greet" in enabled
 
 
 def test_resolve_enabled_tools_honours_deny(tmp_path: Path) -> None:
@@ -168,7 +176,7 @@ def test_resolve_enabled_tools_honours_deny(tmp_path: Path) -> None:
     enabled = resolve_enabled_tools(
         settings, profile, channel="cli", mcp=McpHostManager(), extra_tools=["greet"]
     )
-    assert "greet" not in enabled
+    assert "user/greet" not in enabled
 
 
 def test_user_tool_defaults_eager(tmp_path: Path) -> None:
@@ -191,9 +199,9 @@ def test_user_tool_can_be_deferred(tmp_path: Path) -> None:
     # A single UserToolset still lists the tool; deferral is applied by the
     # builder that wraps cold specs. Verify the schema is exposed.
     toolset = UserToolset([spec])
-    ctx = _ctx(_deps(tmp_path, RecordingHitl(), enabled=["greet"]))
+    ctx = _ctx(_deps(tmp_path, RecordingHitl(), enabled=["user/greet"]))
     tools = asyncio.run(toolset.get_tools(ctx))
-    assert "greet" in tools
+    assert "user__greet" in tools
 
 
 def test_cold_user_tool_is_deferred_from_first_request(tmp_path: Path) -> None:
@@ -206,7 +214,7 @@ def test_cold_user_tool_is_deferred_from_first_request(tmp_path: Path) -> None:
     settings = LatticeSettings(home=tmp_path, tools=ToolsConfig(cold=["greet"]))
     spec = UserToolSpec(name="greet", description="d", handler=ToolHandler(code="print(1)"))
     toolset = build_core_toolset(settings, McpHostManager(), user_tools=[spec])
-    deps = _deps(tmp_path, RecordingHitl(), enabled=["greet"])
+    deps = _deps(tmp_path, RecordingHitl(), enabled=["user/greet"])
     captured: dict[str, list[str]] = {}
 
     async def fn(messages, info):  # type: ignore[no-untyped-def]
@@ -226,8 +234,8 @@ def test_cold_user_tool_is_deferred_from_first_request(tmp_path: Path) -> None:
         capabilities=[tool_search_capability()],
     )
     asyncio.run(agent.run("hi", deps=deps))
-    assert "greet" in captured["deferred"]
-    assert "greet" not in captured["eager"]
+    assert "user__greet" in captured["deferred"]
+    assert "user__greet" not in captured["eager"]
 
 
 def test_toolset_cache_key_tracks_handler_digest(tmp_path: Path) -> None:
@@ -256,9 +264,9 @@ def test_toolset_exposes_declared_schema(tmp_path: Path) -> None:
     toolset = UserToolset([spec])
     ctx = _ctx(_deps(tmp_path, RecordingHitl()))
     tools = asyncio.run(toolset.get_tools(ctx))
-    assert set(tools) == {"greet"}
-    assert tools["greet"].tool_def.description == "Say hi"
-    assert tools["greet"].tool_def.parameters_json_schema == schema
+    assert set(tools) == {"user__greet"}
+    assert tools["user__greet"].tool_def.description == "Say hi"
+    assert tools["user__greet"].tool_def.parameters_json_schema == schema
 
 
 def test_validate_args_required_and_types() -> None:
@@ -288,9 +296,10 @@ def test_benign_handler_runs_without_approval(tmp_path: Path) -> None:
     )
     spec = scan_user_tools(tmp_path).specs[0]
     hitl = RecordingHitl(ApprovalDecision.DENY)
-    deps = _deps(tmp_path, hitl, enabled=["greet"])
-    toolset = UserToolset([spec])
-    out = asyncio.run(toolset.call_tool("greet", {"name": "Ada"}, _ctx(deps), None))  # type: ignore[arg-type]
+    deps = _deps(tmp_path, hitl, enabled=["user/greet"])
+    deps.user_tools = [spec]
+    toolset = _guarded(UserToolset([spec]))
+    out = asyncio.run(toolset.call_tool("user__greet", {"name": "Ada"}, _ctx(deps), None))  # type: ignore[arg-type]
     assert "greet Ada" in out
     assert "tool greet" in out
     assert '"name": "Ada"' in out
@@ -320,9 +329,10 @@ def test_path_handler_runs_from_its_own_directory(tmp_path: Path) -> None:
         "handler:\n  path: skills/demo/scripts/hi.py\n",
     )
     spec = scan_user_tools(tmp_path).specs[0]
-    deps = _deps(tmp_path, RecordingHitl(ApprovalDecision.DENY), enabled=["from_path"])
-    toolset = UserToolset([spec])
-    out = asyncio.run(toolset.call_tool("from_path", {"name": "Ada"}, _ctx(deps), None))  # type: ignore[arg-type]
+    deps = _deps(tmp_path, RecordingHitl(ApprovalDecision.DENY), enabled=["user/from_path"])
+    deps.user_tools = [spec]
+    toolset = _guarded(UserToolset([spec]))
+    out = asyncio.run(toolset.call_tool("user__from_path", {"name": "Ada"}, _ctx(deps), None))  # type: ignore[arg-type]
     assert "file hi.py" in out
     assert "sibling from-sibling" in out
     assert "name Ada" in out
@@ -337,11 +347,12 @@ def test_dangerous_handler_triggers_hitl(tmp_path: Path) -> None:
     )
     spec = scan_user_tools(tmp_path).specs[0]
     hitl = RecordingHitl(ApprovalDecision.DENY)
-    deps = _deps(tmp_path, hitl, enabled=["outer"])
-    toolset = UserToolset([spec])
-    out = asyncio.run(toolset.call_tool("outer", {}, _ctx(deps), None))  # type: ignore[arg-type]
+    deps = _deps(tmp_path, hitl, enabled=["user/outer"])
+    deps.user_tools = [spec]
+    toolset = _guarded(UserToolset([spec]))
+    out = asyncio.run(toolset.call_tool("user__outer", {}, _ctx(deps), None))  # type: ignore[arg-type]
     assert out == "denied: deny"
-    assert hitl.calls == ["outer"]
+    assert hitl.calls == ["user/outer"]
 
 
 def test_invalid_args_are_rejected_before_running(tmp_path: Path) -> None:
@@ -354,9 +365,10 @@ def test_invalid_args_are_rejected_before_running(tmp_path: Path) -> None:
     )
     spec = scan_user_tools(tmp_path).specs[0]
     hitl = RecordingHitl(ApprovalDecision.APPROVE)
-    deps = _deps(tmp_path, hitl, enabled=["greet"])
-    toolset = UserToolset([spec])
-    out = asyncio.run(toolset.call_tool("greet", {}, _ctx(deps), None))  # type: ignore[arg-type]
+    deps = _deps(tmp_path, hitl, enabled=["user/greet"])
+    deps.user_tools = [spec]
+    toolset = _guarded(UserToolset([spec]))
+    out = asyncio.run(toolset.call_tool("user__greet", {}, _ctx(deps), None))  # type: ignore[arg-type]
     assert "missing required" in out
     assert "ran" not in out
     assert hitl.calls == []
@@ -383,7 +395,7 @@ def test_user_tool_reaches_model_and_executes(tmp_path: Path) -> None:
         handler=ToolHandler(code="import json, sys\nprint('hi', json.load(sys.stdin)['name'])\n"),
     )
     settings = LatticeSettings(home=tmp_path)
-    deps = _deps(tmp_path, RecordingHitl(ApprovalDecision.APPROVE), enabled=["greet"])
+    deps = _deps(tmp_path, RecordingHitl(ApprovalDecision.APPROVE), enabled=["user/greet"])
     deps.user_tools = [spec]
     toolset = build_core_toolset(settings, McpHostManager(), user_tools=[spec])
 
@@ -394,12 +406,12 @@ def test_user_tool_reaches_model_and_executes(tmp_path: Path) -> None:
         seen["names"] = [t.name for t in info.function_tools]
         if state["calls"] == 0:
             state["calls"] = 1
-            return ModelResponse(parts=[ToolCallPart("greet", {"name": "Ada"})])
+            return ModelResponse(parts=[ToolCallPart("user__greet", {"name": "Ada"})])
         return ModelResponse(parts=[TextPart("done")])
 
     agent: Agent[TurnDeps, str] = Agent(
         FunctionModel(fn), deps_type=TurnDeps, system_prompt="t", toolsets=[toolset]
     )
     result = asyncio.run(agent.run("hi", deps=deps))
-    assert "greet" in seen["names"]
+    assert "user__greet" in seen["names"]
     assert str(result.output) == "done"

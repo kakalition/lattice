@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai.messages import ModelMessage, ToolCallPart, ToolReturnPart
 
 from lattice.deps import result_failed
+from lattice.tool_names import normalize_name
 
 _TARGET_KEYS = (
     "path",
@@ -36,9 +37,9 @@ _TARGET_KEYS = (
     "reminder",
     "prompt",
 )
-_ARTIFACT_TOOLS = frozenset({"write_file", "edit_file", "generate_chart", "generate_pdf"})
+_ARTIFACT_TOOLS = frozenset({"files/write", "files/edit", "media/chart", "media/pdf"})
 # Tools whose result is worth a bounded snippet in the cross-turn ledger.
-_EVIDENCE_TOOLS = frozenset({"read_file", "sqlite_query", "sqlite_schema", "web_fetch"})
+_EVIDENCE_TOOLS = frozenset({"files/read", "sqlite/query", "sqlite/schema", "web/fetch"})
 _SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd|bearer)\b\s*[:=]?\s*\S+")
 _MAX_TARGET = 120
 _MAX_OUTCOME = 120
@@ -138,7 +139,7 @@ def actions_from_messages(
             elif isinstance(part, ToolReturnPart):
                 call_id = part.tool_call_id or ""
                 call = calls.pop(call_id, None)
-                tool = part.tool_name or (call.tool_name if call else "?")
+                tool = normalize_name(part.tool_name or (call.tool_name if call else "?"))
                 raw_args = call.args if call is not None else {}
                 target = _target_from_args(raw_args)
                 records.append(
@@ -173,7 +174,7 @@ def actions_from_tool_trace(
     """
     records: list[ActionRecord] = []
     for t in tools:
-        tool = str(getattr(t, "name", "?"))
+        tool = normalize_name(str(getattr(t, "name", "?")))
         raw_args = getattr(t, "args", None) or {}
         target = _target_from_args(raw_args) if raw_args else ""
         records.append(

@@ -17,9 +17,18 @@ observability:
   turn_record: true
 
 tools:
+  # Tool names are canonical `group/leaf` (the model calls `group__leaf`); legacy
+  # flat names and `prefix_*` globs are normalized on load.
   allow: ["*"]
   deny: []
   mcp_defer: auto
+
+mcp:
+  enabled: true
+  # servers:
+  #   - name: filesystem
+  #     command: npx
+  #     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
 
 browser:
   channel: auto          # auto | chrome | chromium (auto prefers system Chrome)

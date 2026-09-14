@@ -5,20 +5,23 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import FunctionModel
 
 from lattice.config import LatticeSettings, ToolTier
 from lattice.profiles.load import Profile
-from lattice.tools.agent import build_toolsets, default_eager_names, resolve_tier
+from lattice.tool_names import wire_name
 from lattice.tools.files import remove_path
+from lattice.tools.groups import build_toolsets, default_eager_names, resolve_tier
 
 
 def _all_names(toolsets) -> set[str]:
-    """Tool names reachable in a toolset tree, unwrapping wrappers."""
+    """Model-facing (wire) names reachable in a toolset tree, unwrapping wrappers."""
 
     def _collect(ts: object) -> set[str]:
         out = set(getattr(ts, "tools", {}).keys())
+        if getattr(ts, "group", None):
+            return out
         inner = getattr(ts, "wrapped", None)
         if inner is not None:
             out |= _collect(inner)
@@ -31,8 +34,15 @@ def _all_names(toolsets) -> set[str]:
 
 
 def _eager_names(toolsets) -> set[str]:
-    """Names exposed without discovery: the first (eager) toolset only."""
-    return set(getattr(toolsets[0], "tools", {}).keys())
+    """Names exposed without discovery: every non-deferred toolset."""
+    from pydantic_ai.toolsets import DeferredLoadingToolset
+
+    names: set[str] = set()
+    for ts in toolsets:
+        if isinstance(ts, DeferredLoadingToolset):
+            continue
+        names |= set(getattr(ts, "tools", {}).keys())
+    return names
 
 
 # --- tier resolution -------------------------------------------------------
@@ -42,47 +52,51 @@ def test_default_tiers_partition_all_core_tools() -> None:
     from lattice.deps import CORE_TOOL_NAMES
 
     eager = set(default_eager_names())
-    assert "read_file" in eager
-    assert "shell" in eager
-    assert "remove_path" in eager
-    assert "web_search" in eager
+    assert "files/read" in eager
+    assert "files/shell" in eager
+    assert "files/remove" in eager
+    assert "web/search" in eager
     # Cold by default.
-    assert "browser_interact" not in eager
-    assert "generate_pdf" not in eager
-    assert "sqlite_execute" not in eager
+    assert "browser/interact" not in eager
+    assert "media/pdf" not in eager
+    assert "sqlite/execute" not in eager
     # Every tool lands in exactly one tier.
     assert eager <= set(CORE_TOOL_NAMES)
 
 
 def test_config_glob_overrides_module_tier() -> None:
-    # `web_*` is eager by default; force it cold.
-    assert resolve_tier("web_search", eager=[], cold=[]) is ToolTier.EAGER
-    assert resolve_tier("web_search", eager=[], cold=["web_*"]) is ToolTier.COLD
-    # `browser_*` is cold by default; force it eager.
-    assert resolve_tier("browser_interact", eager=[], cold=[]) is ToolTier.COLD
-    assert resolve_tier("browser_interact", eager=["browser_*"], cold=[]) is ToolTier.EAGER
+    # `web/*` is eager by default; force it cold.
+    assert resolve_tier("web/search", eager=[], cold=[]) is ToolTier.EAGER
+    assert resolve_tier("web/search", eager=[], cold=["web/*"]) is ToolTier.COLD
+    # Legacy globs and flat names still match.
+    assert resolve_tier("web/search", eager=[], cold=["web_*"]) is ToolTier.COLD
+    assert resolve_tier("web/search", eager=[], cold=["web_search"]) is ToolTier.COLD
+    # `browser/*` is cold by default; force it eager.
+    assert resolve_tier("browser/interact", eager=[], cold=[]) is ToolTier.COLD
+    assert resolve_tier("browser/interact", eager=["browser/*"], cold=[]) is ToolTier.EAGER
     # ``cold`` wins when both match.
-    assert resolve_tier("web_search", eager=["web_*"], cold=["web_*"]) is ToolTier.COLD
+    assert resolve_tier("web/search", eager=["web/*"], cold=["web/*"]) is ToolTier.COLD
 
 
 def test_cold_tools_are_deferred_not_absent() -> None:
+    from pydantic_ai.toolsets import DeferredLoadingToolset
+
     toolsets = build_toolsets()
     eager = _eager_names(toolsets)
     everything = _all_names(toolsets)
     # Cold tools exist in the tree but are not in the eager set.
-    assert "generate_chart" in everything
-    assert "generate_chart" not in eager
-    # The cold toolset is wrapped for deferral.
-    assert len(toolsets) == 2
-    assert toolsets[1].__class__.__name__ == "DeferredLoadingToolset"
+    assert "media__chart" in everything
+    assert "media__chart" not in eager
+    # At least one group is wrapped for deferral.
+    assert any(isinstance(ts, DeferredLoadingToolset) for ts in toolsets)
 
 
 def test_exclude_drops_tool_entirely() -> None:
-    toolsets = build_toolsets(exclude=frozenset({"web_search", "shell"}))
+    toolsets = build_toolsets(exclude=frozenset({"web/search", "files/shell"}))
     names = _all_names(toolsets)
-    assert "web_search" not in names
-    assert "shell" not in names
-    assert "read_file" in names
+    assert "web__search" not in names
+    assert "files__shell" not in names
+    assert "files__read" in names
 
 
 # --- what actually reaches the model --------------------------------------
@@ -180,31 +194,31 @@ def _deps_for(settings: LatticeSettings, enabled: list[str]):
 
 def test_policy_filter_hides_disabled_tools(tmp_path: Path) -> None:
     settings = LatticeSettings(home=tmp_path)
-    captured = _capture_tool_names(settings, ["read_file"])
+    captured = _capture_tool_names(settings, ["files/read"])
     offered = captured["function_tools"]
-    assert "read_file" in offered
-    assert "shell" not in offered
-    assert "write_file" not in offered
+    assert "files__read" in offered
+    assert "files__shell" not in offered
+    assert "files__write" not in offered
 
 
 def test_filter_applies_to_cold_tools_too(tmp_path: Path) -> None:
     settings = LatticeSettings(home=tmp_path)
-    captured = _capture_tool_names(settings, ["generate_chart"])
+    captured = _capture_tool_names(settings, ["media/chart"])
     offered = captured["function_tools"]
     # A cold tool is deferred, so it is absent from the first request even when
     # policy allows it. (A denied cold tool is likewise never offered.)
-    assert "generate_chart" not in offered
-    assert "shell" not in offered, "denied eager tool leaked"
-    assert "read_file" not in offered, "denied eager tool leaked"
+    assert "media__chart" not in offered
+    assert "files__shell" not in offered, "denied eager tool leaked"
+    assert "files__read" not in offered, "denied eager tool leaked"
 
 
 def test_eager_tools_all_offered_when_enabled(tmp_path: Path) -> None:
     settings = LatticeSettings(home=tmp_path)
-    from lattice.tools.agent import default_eager_names
+    from lattice.tools.groups import default_eager_names
 
     captured = _capture_tool_names(settings, default_eager_names())
     offered = set(captured["function_tools"])
-    assert offered == set(default_eager_names())
+    assert offered == {wire_name(name) for name in default_eager_names()}
 
 
 def test_wire_reduction_is_real(tmp_path: Path) -> None:
@@ -212,7 +226,7 @@ def test_wire_reduction_is_real(tmp_path: Path) -> None:
     from lattice.agent_app import resolve_enabled_tools
     from lattice.deps import CORE_TOOL_NAMES
     from lattice.mcp import McpHostManager
-    from lattice.tools.agent import default_eager_names
+    from lattice.tools.groups import default_eager_names
 
     settings = LatticeSettings(home=tmp_path)
     mcp = McpHostManager()
@@ -221,10 +235,11 @@ def test_wire_reduction_is_real(tmp_path: Path) -> None:
 
     captured = _capture_tool_names(settings, enabled)
     offered = set(captured["function_tools"])
-    assert offered == set(default_eager_names())
-    assert offered < set(CORE_TOOL_NAMES)
+    eager_wire = {wire_name(name) for name in default_eager_names()}
+    assert offered == eager_wire
+    assert offered < {wire_name(name) for name in CORE_TOOL_NAMES}
     # Cold tools exist in the tree, deferred rather than dropped.
-    assert len(offered) == len(default_eager_names())
+    assert len(offered) == len(eager_wire)
 
 
 def test_denied_cold_tool_is_absent_from_discovery_corpus(tmp_path: Path) -> None:
@@ -234,11 +249,11 @@ def test_denied_cold_tool_is_absent_from_discovery_corpus(tmp_path: Path) -> Non
     corpus, because that corpus is exactly what ``search_tools`` can reveal.
     """
     settings = LatticeSettings(home=tmp_path)
-    captured = _capture_tool_names(settings, ["read_file", "generate_chart"])
+    captured = _capture_tool_names(settings, ["files/read", "media/chart"])
     corpus = set(captured["deferred_tools"])
-    assert "generate_chart" in corpus, "allowed cold tool should be discoverable"
-    assert "browser_snapshot" not in corpus, "denied cold tool leaked into the search corpus"
-    assert "sqlite_execute" not in corpus, "denied cold tool leaked into the search corpus"
+    assert "media__chart" in corpus, "allowed cold tool should be discoverable"
+    assert "browser__snapshot" not in corpus, "denied cold tool leaked into the search corpus"
+    assert "sqlite__execute" not in corpus, "denied cold tool leaked into the search corpus"
 
 
 def test_search_tools_only_offered_with_a_nonempty_corpus(tmp_path: Path) -> None:
@@ -246,16 +261,16 @@ def test_search_tools_only_offered_with_a_nonempty_corpus(tmp_path: Path) -> Non
     settings = LatticeSettings(home=tmp_path)
 
     # Only eager tools allowed: nothing is deferred, so no discovery affordance.
-    from lattice.tools.agent import default_eager_names
+    from lattice.tools.groups import default_eager_names
 
     bare = _capture_tool_names(settings, default_eager_names(), with_search=True)
     assert "search_tools" not in bare["function_tools"]
     assert bare["deferred_tools"] == []
 
     # One allowed cold tool is enough to make discovery worth advertising.
-    rich = _capture_tool_names(settings, ["read_file", "generate_chart"], with_search=True)
+    rich = _capture_tool_names(settings, ["files/read", "media/chart"], with_search=True)
     assert "search_tools" in rich["function_tools"]
-    assert rich["deferred_tools"] == ["generate_chart"]
+    assert rich["deferred_tools"] == ["media__chart"]
 
 
 # --- BM25 search strategy --------------------------------------------------
@@ -292,18 +307,18 @@ def test_build_search_description_lists_enabled_cold_core_tools(tmp_path: Path) 
     from lattice.mcp import McpHostManager
 
     settings = LatticeSettings(home=tmp_path)
-    enabled = ["read_file", "shell", "browser_snapshot", "generate_chart", "sqlite_execute"]
+    enabled = ["files/read", "files/shell", "browser/snapshot", "media/chart", "sqlite/execute"]
     desc = build_search_description(enabled, settings, McpHostManager())
 
     assert "Deferred tools available via search_tools:" in desc
-    # Cold names, sorted, and only the policy-enabled ones.
+    # Cold names, sorted, model-facing wire form, and only the policy-enabled ones.
     assert (
-        desc.index("browser_snapshot") < desc.index("generate_chart") < desc.index("sqlite_execute")
+        desc.index("browser__snapshot") < desc.index("media__chart") < desc.index("sqlite__execute")
     )
-    assert "sqlite_backup" not in desc, "policy-denied cold tool leaked into the manifest"
+    assert "sqlite__backup" not in desc, "policy-denied cold tool leaked into the manifest"
     # Eager tools are not advertised as discoverable.
-    assert "read_file" not in desc
-    assert "shell" not in desc
+    assert "files__read" not in desc
+    assert "files__shell" not in desc
     # Byte-stable across calls.
     assert build_search_description(enabled, settings, McpHostManager()) == desc
 
@@ -333,7 +348,7 @@ def test_build_search_description_mentions_deferred_mcp(tmp_path: Path) -> None:
 
     defer = LatticeSettings(home=tmp_path, tools=ToolsConfig(mcp_defer=McpDeferMode.ALWAYS))
     kept = LatticeSettings(home=tmp_path, tools=ToolsConfig(mcp_defer=McpDeferMode.NEVER))
-    enabled = ["read_file", "generate_chart"]
+    enabled = ["files/read", "media/chart"]
 
     assert "Also deferred MCP tools." in build_search_description(
         enabled, defer, cast(McpHostManager, _FakeMcp())
@@ -350,7 +365,7 @@ def test_build_search_description_mentions_deferred_user_tools(tmp_path: Path) -
     from lattice.tools.user_tools import ToolHandler, UserToolSpec
 
     spec = UserToolSpec(name="my_tool", handler=ToolHandler(code="print(1)"))
-    enabled = ["read_file", "generate_chart"]
+    enabled = ["files/read", "media/chart"]
     cold = LatticeSettings(home=tmp_path, tools=ToolsConfig(cold=["my_tool"]))
     eager = LatticeSettings(home=tmp_path)
 
@@ -387,7 +402,7 @@ def test_bm25_search_fn_reveals_cold_tool_end_to_end(tmp_path: Path) -> None:
     from lattice.mcp import McpHostManager
 
     settings = LatticeSettings(home=tmp_path)
-    deps = _deps_for(settings, ["read_file", "generate_chart"])
+    deps = _deps_for(settings, ["files/read", "media/chart"])
     calls = {"n": 0}
 
     async def fn(messages, info):  # type: ignore[no-untyped-def]
@@ -415,7 +430,7 @@ def test_bm25_search_fn_reveals_cold_tool_end_to_end(tmp_path: Path) -> None:
     from typing import Any, cast
 
     content = cast("dict[str, Any]", returns[0].content)
-    assert [match["name"] for match in content["discovered_tools"]] == ["generate_chart"]
+    assert [match["name"] for match in content["discovered_tools"]] == ["media__chart"]
 
 
 def test_revealed_tool_is_appended_after_eager_tools(tmp_path: Path) -> None:
@@ -435,7 +450,7 @@ def test_revealed_tool_is_appended_after_eager_tools(tmp_path: Path) -> None:
     user_spec = UserToolSpec(name="my_eager_tool", handler=ToolHandler(code="print(1)"))
 
     settings = LatticeSettings(home=tmp_path)
-    deps = _deps_for(settings, [*default_eager_names(), "my_eager_tool", "generate_chart"])
+    deps = _deps_for(settings, [*default_eager_names(), "user/my_eager_tool", "media/chart"])
     offered: list[list[str]] = []
     calls = {"n": 0}
 
@@ -458,18 +473,17 @@ def test_revealed_tool_is_appended_after_eager_tools(tmp_path: Path) -> None:
     assert len(offered) >= 2, f"expected a search round-trip, got {len(offered)} request(s)"
     first, second = offered[0], offered[1]
     assert "search_tools" in first
-    assert "generate_chart" not in first, "cold tool leaked into the first request"
-    assert "my_eager_tool" in first, "eager user tool missing from the first request"
-    assert "generate_chart" in second, "revealed tool missing from the follow-up request"
+    assert "media__chart" not in first, "cold tool leaked into the first request"
+    assert "user__my_eager_tool" in first, "eager user tool missing from the first request"
+    assert "media__chart" in second, "revealed tool missing from the follow-up request"
 
-    eager_positions = [
-        second.index(name) for name in [*default_eager_names(), "my_eager_tool"] if name in second
-    ]
+    eager_wire = [wire_name(name) for name in default_eager_names()] + ["user__my_eager_tool"]
+    eager_positions = [second.index(name) for name in eager_wire if name in second]
     assert eager_positions
-    assert second.index("generate_chart") > max(eager_positions), (
+    assert second.index("media__chart") > max(eager_positions), (
         "reveal interleaved with eager tools"
     )
-    assert second.index("generate_chart") < second.index("search_tools")
+    assert second.index("media__chart") < second.index("search_tools")
 
 
 def test_calling_a_denied_tool_never_executes(tmp_path: Path) -> None:
@@ -481,16 +495,19 @@ def test_calling_a_denied_tool_never_executes(tmp_path: Path) -> None:
     import asyncio
 
     from pydantic_ai import Agent
+    from pydantic_ai.exceptions import UnexpectedModelBehavior
     from pydantic_ai.messages import ModelResponse, ToolCallPart
 
     from lattice.agent_app import build_core_toolset, tool_search_capability
     from lattice.mcp import McpHostManager
 
     settings = LatticeSettings(home=tmp_path)
-    deps = _deps_for(settings, ["read_file"])  # write_file denied
+    deps = _deps_for(settings, ["files/read"])  # files/write denied
 
     async def always_calls_denied(messages, info):
-        return ModelResponse(parts=[ToolCallPart("write_file", {"path": "x.txt", "content": "hi"})])
+        return ModelResponse(
+            parts=[ToolCallPart("files__write", {"path": "x.txt", "content": "hi"})]
+        )
 
     agent = Agent(
         FunctionModel(always_calls_denied),
@@ -499,7 +516,7 @@ def test_calling_a_denied_tool_never_executes(tmp_path: Path) -> None:
         toolsets=[build_core_toolset(settings, McpHostManager())],
         capabilities=[tool_search_capability()],
     )
-    with pytest.raises(Exception):
+    with pytest.raises(UnexpectedModelBehavior):
         asyncio.run(agent.run("write it", deps=deps))
     # The tool body never ran: nothing was written.
     assert not (tmp_path / "x.txt").exists()
@@ -624,7 +641,7 @@ def test_remove_path_is_hitl_gated(tmp_path: Path) -> None:
 
     target = tmp_path / "x.txt"
     target.write_text("hi")
-    deps = _deps_for(LatticeSettings(home=tmp_path), ["remove_path"])
+    deps = _deps_for(LatticeSettings(home=tmp_path), ["files/remove"])
     deps.hitl = _Deny()  # type: ignore[assignment]
     ctx = RunContext(deps=deps, model=None, usage=None, prompt=None)  # type: ignore[arg-type]
     out = asyncio.run(maybe_approve(ctx, "remove_path", "x.txt", path="x.txt"))

@@ -12,6 +12,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from lattice.paths import lattice_home
+from lattice.tool_names import normalize_name, normalize_pattern
 
 DEFAULT_NAME = "Lattice"
 NAME_LINE_RE = re.compile(r"^\s*name\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
@@ -26,10 +27,10 @@ You are a personal assistant with tools, memory, and skills.
 ## How you work
 - Think first, then take the smallest correct action.
 - Read before you write; verify and report what actually changed.
-- Use `clarify` when a request is ambiguous, risky, or irreversible.
-- Track multi-step work with `todo`; use `schedule_add` for anything time-based.
-- Save durable facts with `memory_add`; do not hoard trivia.
-- Check `skills_list` / `skill_view` before improvising; author a skill when a
+- Use `interaction__clarify` when a request is ambiguous, risky, or irreversible.
+- Track multi-step work with `interaction__todo`; use `schedule__add` for anything time-based.
+- Save durable facts with `memory__add`; do not hoard trivia.
+- Check `skills__list` / `skills__view` before improvising; author a skill when a
   pattern repeats.
 
 ## Scope and effort
@@ -107,7 +108,16 @@ class Profile(BaseModel):
 
 
 def _match_any(name: str, patterns: list[str]) -> bool:
-    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
+    # Normalize both sides: legacy flat names and ``prefix_*`` globs map onto
+    # canonical ``group/leaf`` names. A bare pattern also matches the leaf, so
+    # old user-tool names (``greet``) keep working alongside ``user/greet``.
+    canonical = normalize_name(name)
+    leaf = canonical.split("/", 1)[1] if "/" in canonical else canonical
+    for pat in patterns:
+        normalized = normalize_pattern(pat)
+        if fnmatch.fnmatch(canonical, normalized) or fnmatch.fnmatch(leaf, normalized):
+            return True
+    return False
 
 
 def merge_tool_policy(

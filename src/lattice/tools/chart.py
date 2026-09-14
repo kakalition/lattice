@@ -123,7 +123,6 @@ def _draw_chart(
     pad_x = _pt(fig_w, PT_MD)
     pad_y = _pt(fig_h, PT_MD)
     gap_sm = _pt(fig_h, PT_SM)
-    gap_md = _pt(fig_h, PT_MD)
     title_h = _pt(fig_h, 18.0)
     desc_h = _pt(fig_h, 12.0)
     legend_h = _pt(fig_h, 11.0)

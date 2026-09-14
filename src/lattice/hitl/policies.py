@@ -9,6 +9,8 @@ import re
 import shlex
 from pathlib import Path
 
+from lattice.tool_names import normalize_name
+
 # Shell HITL only for high-blast-radius commands.
 _SENSITIVE_ABS = (
     r"(?:etc|usr|bin|sbin|boot|System|Library|private|Applications|"
@@ -59,15 +61,16 @@ DANGEROUS_SCRIPT_PATTERNS = (
     re.compile(r"\b(?:curl|wget)\b", re.I),
 )
 
-# Tools that may need Approve/Deny — still filtered by args below.
+# Tools that may need Approve/Deny — still filtered by args below. Names are
+# canonical (``group/leaf``); ``tool_needs_approval`` normalizes wire/legacy input.
 DESTRUCTIVE_GATE_TOOLS = frozenset(
     {
-        "shell",
-        "sqlite_execute",
-        "sqlite_unregister",
-        "profile_remove",
-        "execute_script",
-        "remove_path",
+        "files/shell",
+        "sqlite/execute",
+        "sqlite/unregister",
+        "profiles/remove",
+        "compute/script",
+        "files/remove",
     }
 )
 
@@ -158,7 +161,7 @@ _SCAN_SPLIT = re.compile(r"&&|\|\||;|\|")
 _ROOT_TOKENS = frozenset({"/", "~", "$HOME", "~/", "~\\"})
 _SCAN_HINT = (
     "refusing unbounded filesystem scan ({verb} over / or ~); "
-    "use search_files to locate files or sqlite_schema for databases"
+    "use files__search to locate files or sqlite__schema for databases"
 )
 
 
@@ -257,25 +260,26 @@ def tool_needs_approval(
     home: Path | None = None,
     workspace: Path | None = None,
 ) -> bool:
-    if tool_name not in DESTRUCTIVE_GATE_TOOLS:
+    canonical = normalize_name(tool_name)
+    if canonical not in DESTRUCTIVE_GATE_TOOLS:
         return False
-    if tool_name == "shell":
+    if canonical == "files/shell":
         if not args:
             return False
         return shell_needs_approval(str(args.get("command", "")), home=home, workspace=workspace)
-    if tool_name == "sqlite_execute":
+    if canonical == "sqlite/execute":
         if not args:
             return True
         return sql_needs_approval(str(args.get("sql", "")))
-    if tool_name == "execute_script":
+    if canonical == "compute/script":
         if not args:
             return False
         body = str(args.get("code") or args.get("code_preview") or "")
         return script_needs_approval(body, language=str(args.get("language") or ""))
-    if tool_name == "remove_path":
+    if canonical == "files/remove":
         if not args:
             return True
         # Any removal is gated; recursive removal always requires approval.
         return True
-    # sqlite_unregister, profile_remove
+    # sqlite/unregister, profiles/remove
     return True

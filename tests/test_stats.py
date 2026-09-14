@@ -79,8 +79,8 @@ def test_compute_stats_aggregates() -> None:
     assert data["phases"]["prefetch"] == {"total_ms": 30, "p50": 10, "p95": 20}
     assert data["phases"]["executor"] == {"total_ms": 300, "p50": 100, "p95": 200}
     assert data["phases"]["compress"] == {"total_ms": 5, "p50": 5, "p95": 5}
-    assert dict(data["top_failing_tools"]) == {"shell": 1, "calculator": 1}
-    assert data["top_expensive_tools"][0] == ("shell", 19)
+    assert dict(data["top_failing_tools"]) == {"files/shell": 1, "compute/calculator": 1}
+    assert data["top_expensive_tools"][0] == ("files/shell", 19)
 
 
 def test_compute_stats_empty() -> None:

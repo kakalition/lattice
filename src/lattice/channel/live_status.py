@@ -18,6 +18,7 @@ from contextvars import ContextVar
 from typing import Any, Protocol
 
 from lattice.events import TurnEvents
+from lattice.tool_names import normalize_name
 
 _bound: ContextVar[TurnEvents | None] = ContextVar("lattice_live_events", default=None)
 
@@ -429,73 +430,74 @@ def _shell_friendly(command: str) -> tuple[str, str]:
 
 def _friendly_action(name: str, args: dict[str, Any]) -> tuple[str, str]:
     """(action phrase, subject) in plain language; no tool names or raw commands."""
+    name = normalize_name(name)
     get = args.get
-    if name == "shell":
+    if name == "files/shell":
         return _shell_friendly(str(get("command") or ""))
-    if name == "read_file":
+    if name == "files/read":
         return "Read", _basename(get("path"))
-    if name == "write_file":
+    if name == "files/write":
         return "Wrote", _basename(get("path"))
-    if name == "edit_file":
+    if name == "files/edit":
         return "Updated", _basename(get("path"))
-    if name == "remove_path":
+    if name == "files/remove":
         return "Removed", _basename(get("path"))
-    if name == "search_files":
+    if name == "files/search":
         return "Looked for", _clip(get("pattern"), 40)
-    if name == "web_search":
+    if name == "web/search":
         return "Searched the web for", _clip(get("query"), 50)
-    if name == "web_fetch":
+    if name == "web/fetch":
         return "Opened", _host(get("url"))
-    if name == "execute_script":
+    if name == "compute/script":
         target = get("path") or f"{get('language', '')} script"
         return "Ran", _basename(target)
-    if name == "ocr":
+    if name == "media/ocr":
         return "Read text from", _basename(get("path"))
-    if name == "generate_pdf":
+    if name == "media/pdf":
         return "Made a PDF from", _basename(get("path"))
-    if name == "generate_chart":
+    if name == "media/chart":
         return "Made a chart from", _basename(get("path"))
-    if name == "calculator":
+    if name == "compute/calculator":
         return "Worked out", _clip(get("expression"), 40)
-    if name == "clarify":
+    if name == "interaction/clarify":
         return "Asked you a question", ""
-    if name == "todo":
+    if name == "interaction/todo":
         return "Updated the to-do list", ""
-    if name == "schedule_add":
+    if name == "schedule/add":
         return "Set a reminder for", _clip(get("reminder"), 40)
-    if name == "schedule_list":
+    if name == "schedule/list":
         return "Checked your reminders", ""
-    if name == "schedule_cancel":
+    if name == "schedule/cancel":
         return "Cancelled a reminder", ""
-    if name == "timezone_get":
+    if name == "schedule/timezone_get":
         return "Checked the time zone", ""
-    if name == "timezone_set":
+    if name == "schedule/timezone_set":
         return "Set the time zone to", _clip(get("timezone"), 30)
-    if name == "session_search":
+    if name == "memory/session_search":
         return "Looked back through your chats for", _clip(get("query"), 40)
-    if name == "memory_search":
+    if name == "memory/search":
         return "Recalled memories about", _clip(get("query"), 40)
-    if name == "memory_add":
+    if name == "memory/add":
         return "Saved a memory", ""
-    if name == "memory_update":
+    if name == "memory/update":
         return "Updated a memory", ""
-    if name == "memory_forget":
+    if name == "memory/forget":
         return "Forgot a memory", ""
-    if name == "sqlite_list":
+    if name == "sqlite/list":
         return "Listed your databases", ""
-    if name.startswith("sqlite_"):
+    if name.startswith("sqlite/"):
         return "Worked on the database", _clip(get("name"), 30)
-    if name == "skills_list":
+    if name == "skills/list":
         return "Listed the available skills", ""
-    if name == "skill_view":
+    if name == "skills/view":
         return "Opened the skill", _clip(get("name"), 30)
-    if name == "profile_list":
+    if name == "profiles/list":
         return "Listed your profiles", ""
-    if name == "profile_remove":
+    if name == "profiles/remove":
         return "Removed the profile", _clip(get("profile_id"), 30)
-    if name == "browser_interact":
+    if name == "browser/interact":
         return "Used the browser", ""
-    if name == "browser_snapshot":
+    if name == "browser/snapshot":
         return "Captured the page", ""
     return "Worked on your request", ""
 

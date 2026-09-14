@@ -45,7 +45,8 @@ class ToolsConfig(BaseModel):
     deny: list[str] = Field(default_factory=list)
     mcp_defer: McpDeferMode = McpDeferMode.AUTO
     mcp_defer_threshold: int = 8
-    # fnmatch globs matched against tool names; override each module's default TIER.
+    # fnmatch globs matched against canonical tool names (`group/leaf`); override
+    # each tool's default TIER. Legacy flat names and `prefix_*` globs still match.
     # ``cold`` wins when a name matches both.
     eager: list[str] = Field(default_factory=list)
     cold: list[str] = Field(default_factory=list)
@@ -60,6 +61,34 @@ class ToolsConfig(BaseModel):
 class ChannelToolsConfig(BaseModel):
     allow: list[str] = Field(default_factory=lambda: ["*"])
     deny: list[str] = Field(default_factory=list)
+
+
+class McpServerConfig(BaseModel):
+    """One external MCP server: a stdio command or a streamable-HTTP URL."""
+
+    name: str
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    url: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _exactly_one_transport(self) -> McpServerConfig:
+        if bool((self.command or "").strip()) == bool((self.url or "").strip()):
+            raise ValueError("mcp server must set exactly one of command or url")
+        return self
+
+
+class McpConfig(BaseModel):
+    """External MCP servers and their connection timeouts."""
+
+    enabled: bool = True
+    servers: list[McpServerConfig] = Field(default_factory=list)
+    # Discovery/initialize budget per server; calls get the longer budget.
+    connect_timeout_seconds: float = 20.0
+    call_timeout_seconds: float = 60.0
 
 
 class TelegramConfig(BaseModel):
@@ -195,6 +224,7 @@ class LatticeSettings(BaseSettings):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     scripts: ScriptsConfig = Field(default_factory=ScriptsConfig)
     sqlite: SqliteConfig = Field(default_factory=SqliteConfig)
@@ -228,6 +258,15 @@ def _scrub_secrets(data: dict[str, Any]) -> dict[str, Any]:
         telegram = dict(out["telegram"])
         telegram.pop("token", None)
         out["telegram"] = telegram
+    if isinstance(out.get("mcp"), dict):
+        mcp = dict(out["mcp"])
+        servers = mcp.get("servers")
+        if isinstance(servers, list):
+            mcp["servers"] = [
+                {**srv, "env": {}} if isinstance(srv, dict) and srv.get("env") else srv
+                for srv in servers
+            ]
+        out["mcp"] = mcp
     return out
 
 
@@ -390,9 +429,24 @@ tools:
   # Drop BM25 matches scoring below this fraction of the best match; 0 disables.
   search_min_ratio: 0.35
   # Optional: override which tools ship eagerly vs. behind tool search.
-  # Glob patterns; `cold` wins on conflict. Empty = use each tool's built-in tier.
-  eager: []   # e.g. ["web_*", "sqlite_*"]
-  cold: []    # e.g. ["browser_*", "generate_*"]
+  # Glob patterns match canonical `group/leaf` names; `cold` wins on conflict.
+  # Empty = use each tool's built-in tier.
+  eager: []   # e.g. ["web/*", "sqlite/*"]
+  cold: []    # e.g. ["browser/*", "media/*"]
+
+mcp:
+  enabled: true
+  # External MCP servers. Each needs exactly one transport: `command` (stdio)
+  # or `url` (streamable HTTP). Tools are exposed to the model as
+  # `server__tool` and matched in config as `server/tool`; server names may not
+  # reuse a built-in group name.
+  # servers:
+  #   - name: filesystem
+  #     command: npx
+  #     args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+  #   - name: remote
+  #     url: https://example.com/mcp
+  servers: []
 
 browser:
   channel: auto          # auto | chrome | chromium (auto prefers system Chrome)

@@ -18,47 +18,18 @@ from lattice.memory import Memory
 from lattice.profiles import Profile
 from lattice.session import SessionStore
 from lattice.sqlite import SqlitePool, SqliteRegistry
+from lattice.tool_names import CORE_TOOL_NAMES
 from lattice.tools.todo import TodoList
 
-CORE_TOOL_NAMES = [
-    "shell",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "remove_path",
-    "search_files",
-    "ocr",
-    "generate_pdf",
-    "generate_chart",
-    "web_search",
-    "web_fetch",
-    "browser_interact",
-    "browser_snapshot",
-    "execute_script",
-    "clarify",
-    "calculator",
-    "todo",
-    "schedule_add",
-    "schedule_list",
-    "schedule_cancel",
-    "timezone_get",
-    "timezone_set",
-    "session_search",
-    "memory_search",
-    "memory_add",
-    "memory_update",
-    "memory_forget",
-    "sqlite_list",
-    "sqlite_schema",
-    "sqlite_query",
-    "sqlite_execute",
-    "sqlite_register",
-    "sqlite_unregister",
-    "sqlite_backup",
-    "skills_list",
-    "skill_view",
-    "profile_list",
-    "profile_remove",
+__all__ = [
+    "CORE_TOOL_NAMES",
+    "ApprovalMemory",
+    "TurnDeps",
+    "approve_tool",
+    "maybe_approve",
+    "result_failed",
+    "traced",
+    "truncate_result",
 ]
 
 
@@ -181,14 +152,19 @@ async def traced(
     return out
 
 
-async def maybe_approve(
+async def approve_tool(
     ctx: RunContext[TurnDeps],
     tool_name: str,
     summary: str,
+    args: dict[str, Any],
     *,
     needs: bool | None = None,
-    **args: Any,
 ) -> str | None:
+    """Approval gate for one tool call; returns a denial string or ``None``.
+
+    The policy question comes from ``tool_needs_approval`` unless the caller
+    overrides ``needs`` (user/script tools resolve it from the handler body).
+    """
     if needs is None:
         needs = tool_needs_approval(
             tool_name,
@@ -224,3 +200,15 @@ async def maybe_approve(
     if ctx.deps.consecutive_denials >= 3:
         return "denied (consecutive denial breaker)"
     return f"denied: {decision.value}"
+
+
+async def maybe_approve(
+    ctx: RunContext[TurnDeps],
+    tool_name: str,
+    summary: str,
+    *,
+    needs: bool | None = None,
+    **args: Any,
+) -> str | None:
+    """Kwarg-friendly wrapper around :func:`approve_tool` (kept for call sites/tests)."""
+    return await approve_tool(ctx, tool_name, summary, args, needs=needs)

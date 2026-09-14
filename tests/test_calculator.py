@@ -36,7 +36,7 @@ def test_calculator_rejects_code_and_bad_math() -> None:
 
 def test_calculator_is_registered() -> None:
     from lattice.deps import CORE_TOOL_NAMES
-    from lattice.tools.agent import tool_functions
+    from lattice.tools.groups import tool_functions
 
-    assert "calculator" in CORE_TOOL_NAMES
-    assert "calculator" in tool_functions()
+    assert "compute/calculator" in CORE_TOOL_NAMES
+    assert "compute/calculator" in tool_functions()

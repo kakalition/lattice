@@ -18,6 +18,7 @@ from typing import Any
 from pydantic_ai.tools import ToolDefinition
 
 from lattice.text import tokenize
+from lattice.tool_names import canonical_name
 
 __all__ = ["bm25_search_fn", "rank_tools"]
 
@@ -27,38 +28,44 @@ _B = 0.75
 # Name tokens count for more than description tokens.
 _NAME_BOOST = 2.0
 
-# Curated ``tool name -> alias tokens`` table. Aliases only add recall; they are
-# appended document-side with description weight and never override a literal
-# name/description match. Aliases already present in a tool's own name or
+# Curated ``canonical tool name -> alias tokens`` table. Aliases only add recall;
+# they are appended document-side with description weight and never override a
+# literal name/description match. Aliases already present in a tool's own name or
 # description are dropped before indexing so they cannot inflate TF/dl for free.
 _ALIASES: dict[str, tuple[str, ...]] = {
-    "generate_chart": ("graph", "plot", "diagram", "visualize", "visualization", "dashboard"),
-    "generate_pdf": ("report", "document", "export", "print"),
-    "browser_interact": ("scrape", "navigate", "click", "page", "browser"),
-    "browser_snapshot": ("page", "html", "inspect", "screenshot", "browser"),
-    "execute_script": ("code", "python", "node", "bash", "sandbox"),
-    "schedule_list": ("reminders", "jobs", "upcoming"),
-    "schedule_cancel": ("reminder", "job"),
-    "timezone_get": ("tz", "clock", "utc"),
-    "timezone_set": ("tz", "clock", "utc"),
-    "sqlite_list": ("database", "tables"),
-    "sqlite_execute": ("sql", "write", "ddl", "dml", "database"),
-    "sqlite_register": ("database", "attach", "detach"),
-    "sqlite_unregister": ("database", "attach", "detach"),
-    "sqlite_backup": ("backup", "dump", "database"),
-    "memory_update": ("remember", "delete"),
-    "memory_forget": ("remember", "delete"),
-    "profile_list": ("profile", "persona"),
-    "profile_remove": ("profile", "persona"),
+    "media/chart": ("graph", "plot", "diagram", "visualize", "visualization", "dashboard"),
+    "media/pdf": ("report", "document", "export", "print"),
+    "browser/interact": ("scrape", "navigate", "click", "page", "browser"),
+    "browser/snapshot": ("page", "html", "inspect", "screenshot", "browser"),
+    "compute/script": ("code", "python", "node", "bash", "sandbox"),
+    "schedule/list": ("reminders", "jobs", "upcoming"),
+    "schedule/cancel": ("reminder", "job"),
+    "schedule/timezone_get": ("tz", "clock", "utc"),
+    "schedule/timezone_set": ("tz", "clock", "utc"),
+    "sqlite/list": ("database", "tables"),
+    "sqlite/execute": ("sql", "write", "ddl", "dml", "database"),
+    "sqlite/register": ("database", "attach", "detach"),
+    "sqlite/unregister": ("database", "attach", "detach"),
+    "sqlite/backup": ("backup", "dump", "database"),
+    "memory/update": ("remember", "delete"),
+    "memory/forget": ("remember", "delete"),
+    "profiles/list": ("profile", "persona"),
+    "profiles/remove": ("profile", "persona"),
 }
 
 
 def _split_tokens(name: str, description: str | None) -> tuple[list[str], list[str]]:
-    name_tokens = tokenize(name)
+    # The corpus carries model-facing wire names (``sqlite__execute``); aliases
+    # are keyed by canonical name, so normalize before both tokenizing and lookup.
+    canonical = canonical_name(name)
+    name_tokens = tokenize(canonical)
     description_tokens = tokenize(description or "")
     known = set(name_tokens) | set(description_tokens)
     alias_tokens = [
-        token for alias in _ALIASES.get(name, ()) for token in tokenize(alias) if token not in known
+        token
+        for alias in _ALIASES.get(canonical, ())
+        for token in tokenize(alias)
+        if token not in known
     ]
     return name_tokens, description_tokens + alias_tokens
 

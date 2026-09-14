@@ -21,8 +21,8 @@ from lattice.session import SessionStore
 from lattice.setup import write_skill_starters
 from lattice.sqlite import SqlitePool, SqliteRegistry
 from lattice.tools import read_cache
-from lattice.tools.agent import tool_functions
 from lattice.tools.file import search_files
+from lattice.tools.groups import tool_functions
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +62,7 @@ async def test_ranged_read_then_default_read_is_not_elided(tmp_path: Path) -> No
     ctx = SimpleNamespace(deps=deps)
     tools = tool_functions()
 
-    ranged = await tools["read_file"](ctx, "a.txt", 2, 3)
+    ranged = await tools["files/read"](ctx, "a.txt", 2, 3)
     assert "showing lines 3-5 of 10" in ranged
     assert "line2" in ranged
     assert "line4" in ranged
@@ -70,7 +70,7 @@ async def test_ranged_read_then_default_read_is_not_elided(tmp_path: Path) -> No
 
     # A ranged read must not mark the whole file read: the default read still
     # returns the full body rather than an "unchanged" marker.
-    full = await tools["read_file"](ctx, "a.txt")
+    full = await tools["files/read"](ctx, "a.txt")
     assert full == body
 
 

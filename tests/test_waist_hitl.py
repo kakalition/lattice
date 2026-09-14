@@ -115,11 +115,11 @@ def test_tool_policy_matrix_deny_and_channel() -> None:
         channel_allow=["*"],
         channel_deny=[],
     )
-    assert "shell" not in restricted
-    assert "write_file" not in restricted
-    assert "sqlite_query" in restricted
-    assert "web_search" in restricted
-    assert "skill_view" in restricted
+    assert "files/shell" not in restricted
+    assert "files/write" not in restricted
+    assert "sqlite/query" in restricted
+    assert "web/search" in restricted
+    assert "skills/view" in restricted
 
     telegram_tight = merge_tool_policy(
         names,
@@ -128,10 +128,10 @@ def test_tool_policy_matrix_deny_and_channel() -> None:
         channel_allow=["read_file", "web_*", "clarify"],
         channel_deny=["shell"],
     )
-    assert "shell" not in telegram_tight
-    assert "read_file" in telegram_tight
-    assert "web_fetch" in telegram_tight
-    assert "write_file" not in telegram_tight
+    assert "files/shell" not in telegram_tight
+    assert "files/read" in telegram_tight
+    assert "web/fetch" in telegram_tight
+    assert "files/write" not in telegram_tight
 
 
 def test_resolve_enabled_tools_respects_telegram_deny(tmp_path: Path) -> None:
@@ -145,9 +145,9 @@ def test_resolve_enabled_tools_respects_telegram_deny(tmp_path: Path) -> None:
     )
     profile = Profile(id="default", tools_allow=["*"], tools_deny=[])
     enabled = resolve_enabled_tools(settings, profile, channel="telegram", mcp=McpHostManager())
-    assert "shell" not in enabled
-    assert "write_file" not in enabled
-    assert "read_file" in enabled
+    assert "files/shell" not in enabled
+    assert "files/write" not in enabled
+    assert "files/read" in enabled
 
 
 @pytest.mark.asyncio
