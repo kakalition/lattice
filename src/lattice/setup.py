@@ -457,6 +457,22 @@ manifest) → **one** manifest here.
 - If you do add several, put the rarely used ones under `tools.cold` so they're deferred
   out of the first request.
 
+## MCP-shaped contract
+Author a user tool the way an MCP server declares one — the manifest is the local,
+in-process equivalent, so the model sees the same shape either way:
+- **Identity.** The declared `name` is a leaf; Lattice namespaces it as `user/<name>`
+  (the model calls `user__<name>`), exactly as an MCP server yields `server/tool`
+  (`server__tool`). Keep it one lowercase token; the 11 built-in group names are
+  reserved, and the manifest name must not collide with a core tool leaf.
+- **Schema.** `parameters` is the tool's input schema (JSON Schema), mirroring MCP
+  `inputSchema`; declare types and `required` so the model gets a typed, discoverable
+  contract.
+- **Call/result.** Args arrive as one JSON object (no positional argv) and the result
+  is stdout text, like an MCP tool result. Report failures loudly (`error: …`).
+- **Gate.** User tools run through the same precheck → approval → `traced` seam as
+  built-in and MCP tools, so HITL, audit, the ledger, and the failure breaker behave
+  identically.
+
 ## Where
 `tools/<name>.yaml` (Lattice home, resolved by `files__write`). Name must match
 `^[a-z][a-z0-9_]*$` and must not collide with a core tool. A newly written
